@@ -234,6 +234,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({
   const [adminPin, setAdminPin] = useState('');
   const [showAdminPin, setShowAdminPin] = useState(false);
   const [showFacultyPin, setShowFacultyPin] = useState(false);
+  const [showStudentPin, setShowStudentPin] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
@@ -1039,7 +1040,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({
                         if (matched) {
                           if (matched.name) setName(matched.name.toUpperCase());
                           if (matched.programme) setDepartment(matched.programme);
-                          if (matched.assignedPassword && !accessKey) setAccessKey(matched.assignedPassword);
+                          // Student Access PIN is strictly NOT auto-filled or displayed: student must enter it manually
                         } else if (DCS_SPECIFIC_STUDENTS[upper]) {
                           setDepartment('MSc Decision and Computing Sciences');
                           if (!name || name === 'STUDENT CANDIDATE') {
@@ -1144,12 +1145,21 @@ export const AuthGate: React.FC<AuthGateProps> = ({
                   <div className="relative">
                     <Lock className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
                     <input
-                      type="password"
+                      type={showStudentPin ? "text" : "password"}
                       value={accessKey}
                       onChange={(e) => setAccessKey(e.target.value)}
                       placeholder="Enter Access PIN"
-                      className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 text-sm font-mono focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100 font-bold"
+                      autoComplete="new-password"
+                      className="w-full pl-9 pr-10 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 text-sm font-mono focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100 font-bold"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowStudentPin(!showStudentPin)}
+                      className="absolute right-3 top-3 text-slate-400 hover:text-slate-600 cursor-pointer"
+                      title={showStudentPin ? "Hide Access PIN" : "Show Access PIN"}
+                    >
+                      {showStudentPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
                   </div>
 
                   {studentPinSchedule && studentPinSchedule.isEnabled && (() => {
