@@ -71,3 +71,75 @@ export function formatDateDisplay(dateInput?: string | Date | null): string {
 
   return '';
 }
+
+/**
+ * Normalizes any timestamp, date string, or Date object into standard "YYYY-MM-DD" format.
+ * Accurately prioritizes DD/MM/YYYY formats (e.g. "06/10/2026, ...") so that day and month
+ * are never swapped by JavaScript's US locale date parsing defaults.
+ */
+export function normalizeDateToYyyyMmDd(dateInput?: string | Date | number | null): string {
+  if (!dateInput) return '';
+
+  if (dateInput instanceof Date && !isNaN(dateInput.getTime())) {
+    const y = dateInput.getFullYear();
+    const m = String(dateInput.getMonth() + 1).padStart(2, '0');
+    const d = String(dateInput.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  if (typeof dateInput === 'number' && !isNaN(dateInput)) {
+    const dt = new Date(dateInput);
+    if (!isNaN(dt.getTime())) {
+      const y = dt.getFullYear();
+      const m = String(dt.getMonth() + 1).padStart(2, '0');
+      const d = String(dt.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+  }
+
+  const str = String(dateInput).trim();
+  if (!str) return '';
+
+  // Numeric epoch string check
+  if (/^\d{11,15}$/.test(str)) {
+    const dt = new Date(parseInt(str, 10));
+    if (!isNaN(dt.getTime())) {
+      const y = dt.getFullYear();
+      const m = String(dt.getMonth() + 1).padStart(2, '0');
+      const d = String(dt.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+  }
+
+  // 1. Matches DD/MM/YYYY or DD-MM-YYYY (e.g. "06/10/2026, 03:45:12 PM", "06/10/2026", "6/10/2026")
+  const ddmmyyyyMatch = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (ddmmyyyyMatch) {
+    const day = ddmmyyyyMatch[1].padStart(2, '0');
+    const month = ddmmyyyyMatch[2].padStart(2, '0');
+    const year = ddmmyyyyMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  // 2. Matches YYYY-MM-DD or YYYY/MM/DD (e.g. "2026-10-06", "2026-10-06T...")
+  const yyyymmddMatch = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (yyyymmddMatch) {
+    const year = yyyymmddMatch[1];
+    const month = yyyymmddMatch[2].padStart(2, '0');
+    const day = yyyymmddMatch[3].padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  // 3. Fallback for ISO or English strings like "Oct 6, 2026"
+  try {
+    const parsed = new Date(str);
+    if (!isNaN(parsed.getTime())) {
+      const y = parsed.getFullYear();
+      const m = String(parsed.getMonth() + 1).padStart(2, '0');
+      const d = String(parsed.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+  } catch {}
+
+  return '';
+}
+

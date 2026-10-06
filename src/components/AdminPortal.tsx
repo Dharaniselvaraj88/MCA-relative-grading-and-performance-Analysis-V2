@@ -65,6 +65,7 @@ import { recoverAllLocalSubmissions, exportSubmissionsToJson, importSubmissionsF
 import { downloadRoleShortcut, getRoleDirectUrl, getRoleSharedUrl } from '../utils/shortcutUtils';
 import { googleSignIn, getAccessToken } from '../utils/googleAuth';
 import { createMasterSubmissionsSpreadsheet } from '../utils/googleSheetsUtils';
+import { normalizeDateToYyyyMmDd } from '../utils/dateUtils';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 import {
   ShieldCheck,
@@ -1808,26 +1809,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   // Check if submission date matches target calendar date
   const matchesDateFilter = (sub: SavedSubmission, targetDateStr: string) => {
     if (!targetDateStr) return true;
-    const rawDate = sub.submittedAt || sub.report.testTimestamp || '';
+    const rawDate = sub.submittedAt || sub.report?.testTimestamp || '';
     if (!rawDate) return false;
 
-    // Check if target YYYY-MM-DD is present
+    const subNormalized = normalizeDateToYyyyMmDd(rawDate);
+    const targetNormalized = normalizeDateToYyyyMmDd(targetDateStr) || targetDateStr;
+
+    if (subNormalized && targetNormalized && subNormalized === targetNormalized) {
+      return true;
+    }
+
+    // Direct substring match fallback
     if (rawDate.includes(targetDateStr)) return true;
 
-    // Parse both dates
-    try {
-      const subD = new Date(rawDate);
-      const [ty, tm, td] = targetDateStr.split('-').map(Number);
-      if (!isNaN(subD.getTime()) && ty && tm && td) {
-        return (
-          subD.getFullYear() === ty &&
-          subD.getMonth() + 1 === tm &&
-          subD.getDate() === td
-        );
-      }
-    } catch {
-      // fallback
+    // Check DD/MM/YYYY variation of target (e.g. 2026-10-06 -> 06/10/2026)
+    const ymd = targetNormalized.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (ymd) {
+      const ddmmyyyy = `${ymd[3]}/${ymd[2]}/${ymd[1]}`;
+      if (rawDate.includes(ddmmyyyy)) return true;
     }
+
     return false;
   };
 
@@ -1892,11 +1893,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       : 0;
 
   const dateLabel = selectedDate
-    ? new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-GB', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric'
-      })
+    ? (() => {
+        const norm = normalizeDateToYyyyMmDd(selectedDate) || selectedDate;
+        const [y, m, d] = norm.split('-').map(Number);
+        if (y && m && d) {
+          return new Date(y, m - 1, d, 12, 0, 0).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric'
+          });
+        }
+        return selectedDate;
+      })()
     : 'All Assessment Dates';
 
   const deptReportLabel = selectedReportDept === 'ALL' ? 'All Departments' : selectedReportDept;
@@ -1959,24 +1967,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   }));
 
   // Available Assessment Dates across all submissions (sorted newest first)
-  const availableAssessmentDates = Array.from(
-    new Set(
+  const availableAssessmentDates: string[] = Array.from(
+    new Set<string>(
       submissions
         .map((s) => {
-          const raw = s.submittedAt || s.report.testTimestamp || '';
-          if (!raw) return '';
-          try {
-            const d = new Date(raw);
-            if (!isNaN(d.getTime())) {
-              return d.toISOString().split('T')[0];
-            }
-          } catch {}
-          if (raw.match(/^\d{4}-\d{2}-\d{2}/)) {
-            return raw.substring(0, 10);
-          }
-          return '';
+          const raw = s.submittedAt || s.report?.testTimestamp || '';
+          return normalizeDateToYyyyMmDd(raw);
         })
-        .filter(Boolean)
+        .filter((d): d is string => Boolean(d))
     )
   ).sort().reverse();
 
@@ -2109,11 +2107,20 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     ? Math.max(...dashboardDateSubs.map((s) => s.report.overallScore))
     : 0;
   const dashboardDateFormattedLabel = analyticsDate
-    ? new Date(analyticsDate + 'T00:00:00').toLocaleDateString('en-GB', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric'
-      })
+    ? (() => {
+        const norm = normalizeDateToYyyyMmDd(analyticsDate) || analyticsDate;
+        const [y, m, d] = norm.split('-').map(Number);
+        if (y && m && d) {
+          const dtObj = new Date(y, m - 1, d, 12, 0, 0);
+          const isToday = norm === normalizeDateToYyyyMmDd(new Date());
+          return dtObj.toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric'
+          }) + (isToday ? ' (Today)' : '');
+        }
+        return analyticsDate;
+      })()
     : 'All Assessment Dates';
 
   return (
@@ -5151,13 +5158,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   >
                     <option value="">All Assessment Dates</option>
                     {availableAssessmentDates.map((dt) => {
-                      const dtFormatted = new Date(dt + 'T00:00:00').toLocaleDateString('en-GB', {
-                        day: '2-digit',
-                        month: 'short',
-                        year: 'numeric'
-                      });
+                      const [y, m, d] = dt.split('-').map(Number);
+                      const dtObj = (y && m && d) ? new Date(y, m - 1, d, 12, 0, 0) : new Date(dt);
+                      const dtFormatted = !isNaN(dtObj.getTime())
+                        ? dtObj.toLocaleDateString('en-GB', {
+                            day: '2-digit',
+                            month: 'short',
+                            year: 'numeric'
+                          })
+                        : dt;
+                      const isToday = dt === normalizeDateToYyyyMmDd(new Date());
                       return (
-                        <option key={dt} value={dt}>{dtFormatted}</option>
+                        <option key={dt} value={dt}>{dtFormatted}{isToday ? ' (Today)' : ''}</option>
                       );
                     })}
                   </select>
