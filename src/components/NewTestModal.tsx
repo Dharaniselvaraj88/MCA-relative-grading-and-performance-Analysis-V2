@@ -494,6 +494,12 @@ export const NewTestModal: React.FC<NewTestModalProps> = ({
     };
 
     setActiveAssessmentTest(newTest);
+    if (assignedStudents && assignedStudents.length > 0) {
+      try {
+        localStorage.setItem('CIT_ENROLLED_STUDENTS', JSON.stringify(assignedStudents));
+        window.dispatchEvent(new Event('cit_enrolled_students_updated'));
+      } catch {}
+    }
     onSaveTest(newTest);
     setIsSaving(false);
     onClose();
@@ -565,7 +571,7 @@ export const NewTestModal: React.FC<NewTestModalProps> = ({
               }`}>
                 1
               </span>
-              <span>1. Domains & Question Counts</span>
+              <span>1. Domain & Question Counts</span>
             </button>
 
             <div className="flex-1 h-0.5 bg-slate-200" />
@@ -588,7 +594,7 @@ export const NewTestModal: React.FC<NewTestModalProps> = ({
               }`}>
                 2
               </span>
-              <span>2. Difficulty Levels</span>
+              <span>2. Difficulty Level</span>
             </button>
 
             <div className="flex-1 h-0.5 bg-slate-200" />
@@ -611,7 +617,7 @@ export const NewTestModal: React.FC<NewTestModalProps> = ({
               }`}>
                 3
               </span>
-              <span>3. Student Upload & User IDs</span>
+              <span>3. Students Details Upload</span>
             </button>
           </div>
         </div>
@@ -619,11 +625,146 @@ export const NewTestModal: React.FC<NewTestModalProps> = ({
         {/* MODAL BODY (SCROLLABLE) */}
         <div className="p-6 overflow-y-auto flex-1 space-y-6">
 
-          {/* ================= STEP 1: TEST METADATA & DOMAINS ================= */}
+          {/* ================= STEP 1: DOMAIN & QUESTION COUNTS (FIRST STEP) ================= */}
           {activeStep === 1 && (
             <div className="space-y-6 animate-in fade-in duration-150">
               
-              {/* Test Identification Header */}
+              {/* PRIMARY SECTION: DOMAINS & NUMBER OF QUESTIONS FOR EACH DOMAIN */}
+              <div className="bg-slate-50 p-4.5 rounded-xl border border-slate-300 space-y-3.5 shadow-xs">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <BookOpen className="w-4.5 h-4.5 text-blue-600" />
+                      <span>Select Domains & Allocate Question Counts (Step 1)</span>
+                      <span className="text-[10px] font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                        Primary Config
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      First select domains and choose the exact number of questions for each domain. Total assessment questions are calculated dynamically.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono font-bold text-blue-900 bg-blue-50 border border-blue-200 px-3 py-1 rounded-md shadow-2xs">
+                      {totalQuestions} Total Questions
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleDistributeQuestionsEvenly(50)}
+                      className="px-2.5 py-1 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 rounded-md transition-colors cursor-pointer shadow-2xs"
+                      title="Distribute 50 questions equally across all domains (10 per domain)"
+                    >
+                      Reset to 50 Qs
+                    </button>
+                  </div>
+                </div>
+
+                <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs bg-white">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 uppercase tracking-wider text-[11px]">
+                      <tr>
+                        <th className="py-2.5 px-4 w-12 text-center">#</th>
+                        <th className="py-2.5 px-4">Domain Name</th>
+                        <th className="py-2.5 px-4 w-36 text-center">No. of Questions</th>
+                        <th className="py-2.5 px-4 w-28 text-center">Weightage</th>
+                        <th className="py-2.5 px-4 w-16 text-center">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {domains.map((dom, idx) => {
+                        const weightage = totalQuestions > 0 ? Math.round((dom.questionCount / totalQuestions) * 100) : 0;
+                        return (
+                          <tr key={dom.id} className="hover:bg-slate-50 transition-colors">
+                            <td className="py-2.5 px-4 text-center font-mono text-slate-500 font-bold">
+                              {idx + 1}
+                            </td>
+                            <td className="py-2.5 px-4">
+                              <input
+                                type="text"
+                                value={dom.name}
+                                onChange={(e) => handleDomainNameChange(dom.id, e.target.value)}
+                                className="w-full px-2.5 py-1.5 text-xs font-medium border border-slate-200 rounded focus:border-blue-500 focus:outline-none bg-white text-slate-800"
+                                placeholder="Enter domain title"
+                              />
+                            </td>
+                            <td className="py-2.5 px-4 text-center">
+                              <div className="flex items-center justify-center gap-1.5">
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="100"
+                                  value={dom.questionCount}
+                                  onChange={(e) => handleDomainCountChange(dom.id, e.target.value)}
+                                  className="w-20 px-2 py-1.5 text-xs text-center font-bold font-mono border border-slate-300 rounded focus:border-blue-500 focus:outline-none bg-white text-slate-900"
+                                />
+                                <span className="text-slate-400 font-normal">Qs</span>
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-4 text-center">
+                              <span className="inline-block px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                                {weightage}%
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-4 text-center">
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveDomain(dom.id)}
+                                disabled={domains.length <= 1}
+                                className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30 transition-colors cursor-pointer"
+                                title="Remove domain"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot className="bg-slate-50 font-bold text-xs text-slate-800 border-t border-slate-200">
+                      <tr>
+                        <td colSpan={2} className="py-3 px-4 text-right uppercase tracking-wider text-slate-600">
+                          Total Configured Questions:
+                        </td>
+                        <td className="py-3 px-4 text-center font-mono font-black text-sm text-blue-700">
+                          {totalQuestions} Questions
+                        </td>
+                        <td className="py-3 px-4 text-center font-mono font-black text-sm text-blue-700">
+                          100%
+                        </td>
+                        <td></td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+
+                {/* Add Custom Domain Row */}
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    type="text"
+                    value={newDomainName}
+                    onChange={(e) => setNewDomainName(e.target.value)}
+                    placeholder="Add an additional domain (e.g., Vector Calculus, Differential Equations)..."
+                    className="flex-1 px-3 py-2 text-xs border border-slate-300 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500 bg-white"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddDomain();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddDomain}
+                    disabled={!newDomainName.trim()}
+                    className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Domain</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Test Identification & Duration */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
                 <div className="md:col-span-2">
                   <label className="block text-xs font-bold text-slate-700 mb-1">
@@ -671,22 +812,12 @@ export const NewTestModal: React.FC<NewTestModalProps> = ({
                       Total Questions in Assessment
                     </label>
                     <span className="text-xs text-blue-700 font-bold">
-                      Calculated Sum: {totalQuestions} Questions
+                      Calculated from Domain Allocation: {totalQuestions} Questions
                     </span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-blue-900 text-sm font-bold flex items-center justify-between">
-                      <span>Total Questions:</span>
-                      <span className="text-base font-black font-mono text-blue-700">{totalQuestions}</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleDistributeQuestionsEvenly(50)}
-                      className="px-3 py-2 text-xs font-bold text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-                      title="Distribute 50 questions equally across all domains (10 per domain)"
-                    >
-                      Reset to 50 (10/Domain)
-                    </button>
+                  <div className="px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-blue-900 text-sm font-bold flex items-center justify-between">
+                    <span>Active Test Size:</span>
+                    <span className="text-base font-black font-mono text-blue-700">{totalQuestions} Questions</span>
                   </div>
                 </div>
               </div>
@@ -863,128 +994,6 @@ export const NewTestModal: React.FC<NewTestModalProps> = ({
                       </div>
                     );
                   })}
-                </div>
-              </div>
-
-              {/* DOMAINS & NUMBER OF QUESTIONS FOR EACH DOMAIN */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                      <BookOpen className="w-4 h-4 text-blue-600" />
-                      Domain Details & Question Allocation
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Mention domain names and specify the exact number of questions allocated to each domain.
-                    </p>
-                  </div>
-                  <span className="text-xs font-mono font-bold text-slate-700 bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200">
-                    {domains.length} Domains Configured
-                  </span>
-                </div>
-
-                <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 uppercase tracking-wider text-[11px]">
-                      <tr>
-                        <th className="py-2.5 px-4 w-12 text-center">#</th>
-                        <th className="py-2.5 px-4">Domain Name</th>
-                        <th className="py-2.5 px-4 w-36 text-center">No. of Questions</th>
-                        <th className="py-2.5 px-4 w-28 text-center">Weightage</th>
-                        <th className="py-2.5 px-4 w-16 text-center">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200">
-                      {domains.map((dom, idx) => {
-                        const weightage = totalQuestions > 0 ? Math.round((dom.questionCount / totalQuestions) * 100) : 0;
-                        return (
-                          <tr key={dom.id} className="hover:bg-slate-50 transition-colors">
-                            <td className="py-2.5 px-4 text-center font-mono text-slate-500 font-bold">
-                              {idx + 1}
-                            </td>
-                            <td className="py-2.5 px-4">
-                              <input
-                                type="text"
-                                value={dom.name}
-                                onChange={(e) => handleDomainNameChange(dom.id, e.target.value)}
-                                className="w-full px-2.5 py-1.5 text-xs font-medium border border-slate-200 rounded focus:border-blue-500 focus:outline-none bg-white text-slate-800"
-                                placeholder="Enter domain title"
-                              />
-                            </td>
-                            <td className="py-2.5 px-4 text-center">
-                              <div className="flex items-center justify-center gap-1.5">
-                                <input
-                                  type="number"
-                                  min="1"
-                                  max="100"
-                                  value={dom.questionCount}
-                                  onChange={(e) => handleDomainCountChange(dom.id, e.target.value)}
-                                  className="w-20 px-2 py-1.5 text-xs text-center font-bold font-mono border border-slate-300 rounded focus:border-blue-500 focus:outline-none bg-white text-slate-900"
-                                />
-                                <span className="text-slate-400 font-normal">Qs</span>
-                              </div>
-                            </td>
-                            <td className="py-2.5 px-4 text-center">
-                              <span className="inline-block px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                                {weightage}%
-                              </span>
-                            </td>
-                            <td className="py-2.5 px-4 text-center">
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveDomain(dom.id)}
-                                disabled={domains.length <= 1}
-                                className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30 transition-colors cursor-pointer"
-                                title="Remove domain"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                    <tfoot className="bg-slate-50 font-bold text-xs text-slate-800 border-t border-slate-200">
-                      <tr>
-                        <td colSpan={2} className="py-3 px-4 text-right uppercase tracking-wider text-slate-600">
-                          Total Configured Questions:
-                        </td>
-                        <td className="py-3 px-4 text-center font-mono font-black text-sm text-blue-700">
-                          {totalQuestions} Questions
-                        </td>
-                        <td className="py-3 px-4 text-center font-mono font-black text-sm text-blue-700">
-                          100%
-                        </td>
-                        <td></td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
-
-                {/* Add Custom Domain Row */}
-                <div className="flex items-center gap-2 pt-1">
-                  <input
-                    type="text"
-                    value={newDomainName}
-                    onChange={(e) => setNewDomainName(e.target.value)}
-                    placeholder="Add an additional domain (e.g., Vector Calculus, Differential Equations)..."
-                    className="flex-1 px-3 py-2 text-xs border border-slate-300 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500 bg-white"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        handleAddDomain();
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddDomain}
-                    disabled={!newDomainName.trim()}
-                    className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Add Domain</span>
-                  </button>
                 </div>
               </div>
 
@@ -1715,14 +1724,23 @@ export const NewTestModal: React.FC<NewTestModalProps> = ({
             <div className="space-y-6 animate-in fade-in duration-150">
               
               {/* Context Description */}
-              <div className="bg-indigo-50 border border-indigo-200 p-4 rounded-xl">
-                <h3 className="text-sm font-bold text-indigo-950 flex items-center gap-2">
-                  <Users className="w-4 h-4 text-indigo-600" />
-                  Candidate Roster Upload & Programmatic User ID Assignment
-                </h3>
-                <p className="text-xs text-indigo-800 mt-1">
-                  Upload student details across different engineering programmes. The system automatically assigns a standardized institutional User ID based on the programme (e.g., <strong>26CS001</strong> for CSE, <strong>26IT001</strong> for IT, <strong>26CE001</strong> for Civil) and generates a downloadable Excel file.
+              <div className="bg-indigo-50 border border-indigo-200 p-4.5 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-indigo-950 flex items-center gap-2">
+                    <Users className="w-4.5 h-4.5 text-indigo-600" />
+                    <span>Upload Students Details & Candidate Roster (Step 3)</span>
+                  </h3>
+                  <span className="text-[10px] font-bold bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                    Login Gate Enforced
+                  </span>
+                </div>
+                <p className="text-xs text-indigo-900 leading-relaxed font-medium">
+                  Upload student details across engineering programmes. <strong>Verification Requirement:</strong> When students log in to the application, their <strong>Register Number</strong>, <strong>Name</strong>, and <strong>Department</strong> will be strictly verified against this uploaded name list along with their <strong>Access PIN</strong>.
                 </p>
+                <div className="p-2 bg-indigo-100/70 border border-indigo-300/80 rounded-lg text-[11px] text-indigo-950 font-semibold flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-indigo-700 shrink-0" />
+                  <span>The system assigns standardized User IDs (e.g. <strong>26CS001</strong>, <strong>26IT001</strong>, <strong>26CE001</strong>) and credentials downloadable as an Excel workbook.</span>
+                </div>
               </div>
 
               {/* Upload Controls & Settings Bar */}

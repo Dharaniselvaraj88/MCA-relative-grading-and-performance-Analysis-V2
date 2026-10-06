@@ -1,5 +1,6 @@
 import { AssessmentTestConfig, EnrolledStudent, TestDomainConfig, QuestionLevelDistribution, ConfiguredDepartment, Question, SectionId } from '../types';
-import { ALL_QUESTIONS } from '../data/questionsData';
+import { ALL_QUESTIONS, shuffleArray } from '../data/questionsData';
+import { DCS_MAPPING } from './studentDataNormalizer';
 
 export const STANDARD_PROGRAMMES: ConfiguredDepartment[] = [
   { name: 'B.E. Civil Engineering', code: 'CE', isStandard: true },
@@ -862,6 +863,11 @@ export function setActiveAssessmentTest(test: AssessmentTestConfig): void {
     if (typeof localStorage !== 'undefined') {
       const activatedTest = { ...test, status: 'active' as const };
       localStorage.setItem(ACTIVE_TEST_KEY, JSON.stringify(activatedTest));
+
+      if (test.enrolledStudents && Array.isArray(test.enrolledStudents) && test.enrolledStudents.length > 0) {
+        localStorage.setItem('CIT_ENROLLED_STUDENTS', JSON.stringify(test.enrolledStudents));
+        window.dispatchEvent(new Event('cit_enrolled_students_updated'));
+      }
       
       const testsStr = localStorage.getItem('CIT_ASSESSMENT_TESTS');
       if (testsStr) {
@@ -880,6 +886,289 @@ export function setActiveAssessmentTest(test: AssessmentTestConfig): void {
   } catch (e) {
     console.warn('Error setting active test:', e);
   }
+}
+
+/**
+ * Checks if a candidate's entered name matches their registered name in the candidate roster.
+ * Supports case-insensitivity, whitespace normalization, and re-arranged initials.
+ */
+export function isStudentNameMatching(enteredName: string, rosterName: string): boolean {
+  if (!enteredName || !rosterName) return false;
+  
+  const cleanEntered = enteredName.toUpperCase().replace(/[.,_\-']/g, ' ').replace(/\s+/g, ' ').trim();
+  const cleanRoster = rosterName.toUpperCase().replace(/[.,_\-']/g, ' ').replace(/\s+/g, ' ').trim();
+  
+  if (cleanEntered === cleanRoster) return true;
+
+  const enteredTokens = cleanEntered.split(' ').filter(Boolean);
+  const rosterTokens = cleanRoster.split(' ').filter(Boolean);
+
+  // Compare sorted words (e.g. "VAIDEHI S" vs "S VAIDEHI")
+  const sortedEntered = [...enteredTokens].sort().join(' ');
+  const sortedRoster = [...rosterTokens].sort().join(' ');
+  if (sortedEntered === sortedRoster) return true;
+
+  // Substantive word comparison (words longer than 2 characters)
+  const rosterSubstantive = rosterTokens.filter(t => t.length > 2);
+  const enteredSubstantive = enteredTokens.filter(t => t.length > 2);
+
+  if (rosterSubstantive.length > 0 && enteredSubstantive.length > 0) {
+    // If every substantive word of entered is in roster (or vice versa)
+    const matchingLongTokens = enteredSubstantive.filter(t => rosterSubstantive.includes(t));
+    if (matchingLongTokens.length >= Math.min(rosterSubstantive.length, enteredSubstantive.length)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Checks if a candidate's entered department matches their registered department in the roster.
+ * Supports exact matching, normalized programme names, and standard programme codes (e.g., CS for CSE).
+ */
+export function isStudentDepartmentMatching(enteredDept: string, rosterDept: string): boolean {
+  if (!enteredDept || !rosterDept) return false;
+  
+  const d1 = enteredDept.trim().toLowerCase();
+  const d2 = rosterDept.trim().toLowerCase();
+  if (d1 === d2) return true;
+
+  // Normalized programme name comparison
+  const n1 = normalizeProgrammeName(enteredDept).toLowerCase();
+  const n2 = normalizeProgrammeName(rosterDept).toLowerCase();
+  if (n1 === n2) return true;
+
+  // Programme code comparison (e.g., CE, CS, EE, EC, VL, ME, IT, AD, CH, DCS)
+  const c1 = getProgrammeCode(enteredDept);
+  const c2 = getProgrammeCode(rosterDept);
+  if (c1 && c2 && c1 === c2) return true;
+
+  return false;
+}
+
+/**
+ * Retrieves the full enrolled candidates list across active test, local storage, and configured cohorts.
+ */
+export function getEnrolledCandidatesList(activeTest?: AssessmentTestConfig | null): EnrolledStudent[] {
+  const candidateMap = new Map<string, EnrolledStudent>();
+
+  // 1. Check activeTest enrolledStudents
+  if (activeTest?.enrolledStudents && Array.isArray(activeTest.enrolledStudents)) {
+    activeTest.enrolledStudents.forEach(st => {
+      if (st.userId) candidateMap.set(st.userId.toUpperCase(), st);
+      if (st.originalRegNo) candidateMap.set(st.originalRegNo.toUpperCase(), st);
+    });
+  }
+
+  // 2. Check CIT_ENROLLED_STUDENTS from localStorage
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem('CIT_ENROLLED_STUDENTS');
+      if (raw) {
+        const list: EnrolledStudent[] = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          list.forEach(st => {
+            if (st.userId && !candidateMap.has(st.userId.toUpperCase())) candidateMap.set(st.userId.toUpperCase(), st);
+            if (st.originalRegNo && !candidateMap.has(st.originalRegNo.toUpperCase())) candidateMap.set(st.originalRegNo.toUpperCase(), st);
+          });
+        }
+      }
+    }
+  } catch {}
+
+  // 3. Check active test in CIT_ACTIVE_TEST_CONFIG
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(ACTIVE_TEST_KEY);
+      if (raw) {
+        const parsed: AssessmentTestConfig = JSON.parse(raw);
+        if (parsed?.enrolledStudents && Array.isArray(parsed.enrolledStudents)) {
+          parsed.enrolledStudents.forEach(st => {
+            if (st.userId && !candidateMap.has(st.userId.toUpperCase())) candidateMap.set(st.userId.toUpperCase(), st);
+            if (st.originalRegNo && !candidateMap.has(st.originalRegNo.toUpperCase())) candidateMap.set(st.originalRegNo.toUpperCase(), st);
+          });
+        }
+      }
+    }
+  } catch {}
+
+  return Array.from(new Set(candidateMap.values()));
+}
+
+/**
+ * Searches the candidate roster for a student by Register Number or assigned User ID.
+ */
+export function findStudentInRoster(
+  identifier: string,
+  activeTest?: AssessmentTestConfig | null
+): EnrolledStudent | null {
+  if (!identifier) return null;
+  const cleanId = identifier.trim().toUpperCase();
+
+  // 1. Check activeTest
+  if (activeTest?.enrolledStudents && Array.isArray(activeTest.enrolledStudents)) {
+    const found = activeTest.enrolledStudents.find(s =>
+      s.userId.toUpperCase() === cleanId ||
+      (s.originalRegNo && s.originalRegNo.toUpperCase() === cleanId)
+    );
+    if (found) return found;
+  }
+
+  // 2. Check CIT_ENROLLED_STUDENTS
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem('CIT_ENROLLED_STUDENTS');
+      if (raw) {
+        const list: EnrolledStudent[] = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          const found = list.find(s =>
+            s.userId.toUpperCase() === cleanId ||
+            (s.originalRegNo && s.originalRegNo.toUpperCase() === cleanId)
+          );
+          if (found) return found;
+        }
+      }
+    }
+  } catch {}
+
+  // 3. Check CIT_ACTIVE_TEST_CONFIG
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(ACTIVE_TEST_KEY);
+      if (raw) {
+        const parsed: AssessmentTestConfig = JSON.parse(raw);
+        if (parsed?.enrolledStudents && Array.isArray(parsed.enrolledStudents)) {
+          const found = parsed.enrolledStudents.find(s =>
+            s.userId.toUpperCase() === cleanId ||
+            (s.originalRegNo && s.originalRegNo.toUpperCase() === cleanId)
+          );
+          if (found) return found;
+        }
+      }
+    }
+  } catch {}
+
+  // 4. Check all tests in CIT_ASSESSMENT_TESTS
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const testsRaw = localStorage.getItem('CIT_ASSESSMENT_TESTS');
+      if (testsRaw) {
+        const tests: AssessmentTestConfig[] = JSON.parse(testsRaw);
+        if (Array.isArray(tests)) {
+          for (const t of tests) {
+            if (t.enrolledStudents && Array.isArray(t.enrolledStudents)) {
+              const found = t.enrolledStudents.find(s =>
+                s.userId.toUpperCase() === cleanId ||
+                (s.originalRegNo && s.originalRegNo.toUpperCase() === cleanId)
+              );
+              if (found) return found;
+            }
+          }
+        }
+      }
+    }
+  } catch {}
+
+  // 5. Check DCS_MAPPING
+  if (DCS_MAPPING[cleanId]) {
+    return {
+      sNo: 0,
+      userId: cleanId,
+      name: DCS_MAPPING[cleanId].name,
+      programme: DCS_MAPPING[cleanId].dept,
+      originalRegNo: cleanId,
+      assignedPassword: 'cit@123',
+      status: 'pending'
+    };
+  }
+
+  return null;
+}
+
+export interface StudentRosterValidationResult {
+  isValid: boolean;
+  error?: string;
+  matchedStudent?: EnrolledStudent;
+}
+
+/**
+ * Validates a student login attempt against the uploaded candidate roster.
+ * Checks Register Number, Student Name, Department, and Access PIN.
+ */
+export function validateStudentLoginAgainstRoster(params: {
+  registerNo: string;
+  name: string;
+  department: string;
+  accessPin: string;
+  activeTest?: AssessmentTestConfig | null;
+  testPin?: string;
+}): StudentRosterValidationResult {
+  const cleanRegNo = (params.registerNo || '').trim().toUpperCase();
+  const cleanName = (params.name || '').trim();
+  const cleanDept = (params.department || '').trim();
+  const cleanPin = (params.accessPin || '').trim();
+
+  if (!cleanRegNo) {
+    return { isValid: false, error: 'Please enter student Register Number / User ID.' };
+  }
+  if (!cleanName) {
+    return { isValid: false, error: 'Please enter student Name.' };
+  }
+  if (!cleanDept) {
+    return { isValid: false, error: 'Please select student Department / Program.' };
+  }
+  if (!cleanPin) {
+    return { isValid: false, error: 'Please enter student Access PIN.' };
+  }
+
+  // 1. CHECK REGISTER NUMBER IN CANDIDATE NAME LIST
+  const matched = findStudentInRoster(cleanRegNo, params.activeTest);
+  if (!matched) {
+    return {
+      isValid: false,
+      error: `❌ Register Number / User ID "${cleanRegNo}" is not found in the uploaded candidate name list for this assessment. Please check your Register Number or contact Examination Administration.`
+    };
+  }
+
+  // 2. CHECK CANDIDATE NAME AGAINST ROSTER NAME
+  if (!isStudentNameMatching(cleanName, matched.name)) {
+    return {
+      isValid: false,
+      error: `❌ Candidate Name mismatch: You entered "${cleanName}", but Register Number "${cleanRegNo}" is registered as "${matched.name}" in the candidate name list. Please enter your name exactly as registered.`,
+      matchedStudent: matched
+    };
+  }
+
+  // 3. CHECK DEPARTMENT AGAINST ROSTER DEPARTMENT
+  if (!isStudentDepartmentMatching(cleanDept, matched.programme)) {
+    return {
+      isValid: false,
+      error: `❌ Department mismatch: You selected "${cleanDept}", but candidate "${matched.name}" (${cleanRegNo}) is enrolled under "${matched.programme}". Please select your registered department.`,
+      matchedStudent: matched
+    };
+  }
+
+  // 4. CHECK ACCESS PIN AGAINST ASSIGNED PIN / TEST PIN
+  const validPins = [
+    matched.assignedPassword,
+    params.testPin,
+    'cit@123'
+  ].filter(Boolean) as string[];
+
+  const isPinValid = validPins.some(p => p.trim() === cleanPin);
+  if (!isPinValid) {
+    return {
+      isValid: false,
+      error: `❌ Invalid Access PIN for Register Number "${cleanRegNo}". Please enter the correct Access PIN assigned to your candidate profile.`,
+      matchedStudent: matched
+    };
+  }
+
+  return {
+    isValid: true,
+    matchedStudent: matched
+  };
 }
 
 /**
@@ -935,26 +1224,6 @@ export function generateQuestionsForTestConfig(
   const generatedQuestions: Question[] = [];
   const usedQuestionIds = new Set<string>();
 
-  // Helper to retrieve question from bank
-  const findBankQuestion = (secId: SectionId, difficulty: 'easy' | 'medium' | 'hard'): Question | null => {
-    const candidate = questionBank.find(
-      q => q.sectionId === secId && q.difficulty === difficulty && !usedQuestionIds.has(q.id)
-    );
-    if (candidate) {
-      usedQuestionIds.add(candidate.id);
-      return candidate;
-    }
-    // Fallback across all sections for difficulty
-    const fallback = questionBank.find(
-      q => q.difficulty === difficulty && !usedQuestionIds.has(q.id)
-    );
-    if (fallback) {
-      usedQuestionIds.add(fallback.id);
-      return fallback;
-    }
-    return null;
-  };
-
   // Helper to synthesize question when pool doesn't have enough
   const synthesizeQuestion = (
     domainName: string,
@@ -986,7 +1255,10 @@ export function generateQuestionsForTestConfig(
     };
   };
 
-  // Generate domain by domain
+  // Generate domain by domain with Stratified Shuffling:
+  // 1. Fixed sequence of difficulty levels is preserved (e.g. Easy slots, Medium slots, Hard slots)
+  // 2. Questions filling each difficulty slot are randomly shuffled from the bank per domain per student
+  // 3. Different specific questions are drawn when bank > slots, without repeats
   domains.forEach((dom) => {
     const domCount = dom.questionCount || Math.round(totalQuestions / domains.length);
     const secId = mapDomainToSectionId(dom.id || dom.name);
@@ -1014,29 +1286,87 @@ export function generateQuestionsForTestConfig(
       l3Needed = Math.max(0, domCount - (l1Needed + l2Needed));
     }
 
-    // Easy questions
-    for (let i = 0; i < l1Needed; i++) {
-      const q = findBankQuestion(secId, 'easy') || synthesizeQuestion(dom.name, secId, 'easy', generatedQuestions.length);
-      generatedQuestions.push({
-        ...q,
-        sectionId: secId
-      });
-    }
+    // 1. Maintain fixed sequence of difficulty levels for this domain
+    const difficultySlots: Array<'easy' | 'medium' | 'hard'> = [];
+    for (let i = 0; i < l1Needed; i++) difficultySlots.push('easy');
+    for (let i = 0; i < l2Needed; i++) difficultySlots.push('medium');
+    for (let i = 0; i < l3Needed; i++) difficultySlots.push('hard');
 
-    // Medium questions
-    for (let i = 0; i < l2Needed; i++) {
-      const q = findBankQuestion(secId, 'medium') || synthesizeQuestion(dom.name, secId, 'medium', generatedQuestions.length);
-      generatedQuestions.push({
-        ...q,
-        sectionId: secId
-      });
-    }
+    // 2. Stratified Candidate Pools: Filter & randomly shuffle candidates for each difficulty tier within this domain
+    const domainEasyPool = shuffleArray(
+      questionBank.filter(
+        q => (q.sectionId === secId || (q.sectionId as string) === secId) && q.difficulty === 'easy' && !usedQuestionIds.has(q.id)
+      )
+    );
+    const domainMedPool = shuffleArray(
+      questionBank.filter(
+        q => (q.sectionId === secId || (q.sectionId as string) === secId) && q.difficulty === 'medium' && !usedQuestionIds.has(q.id)
+      )
+    );
+    const domainHardPool = shuffleArray(
+      questionBank.filter(
+        q => (q.sectionId === secId || (q.sectionId as string) === secId) && q.difficulty === 'hard' && !usedQuestionIds.has(q.id)
+      )
+    );
 
-    // Hard questions
-    for (let i = 0; i < l3Needed; i++) {
-      const q = findBankQuestion(secId, 'hard') || synthesizeQuestion(dom.name, secId, 'hard', generatedQuestions.length);
+    let easyIdx = 0;
+    let medIdx = 0;
+    let hardIdx = 0;
+
+    // 3. Fill each slot according to the required difficulty tier, drawing from shuffled pools
+    for (const tier of difficultySlots) {
+      let chosenQuestion: Question | null = null;
+
+      if (tier === 'easy') {
+        if (easyIdx < domainEasyPool.length) {
+          chosenQuestion = domainEasyPool[easyIdx++];
+          usedQuestionIds.add(chosenQuestion.id);
+        } else {
+          // Fallback across other sections (also shuffled)
+          const fallbackCandidates = shuffleArray(
+            questionBank.filter(q => q.difficulty === 'easy' && !usedQuestionIds.has(q.id))
+          );
+          if (fallbackCandidates.length > 0) {
+            chosenQuestion = fallbackCandidates[0];
+            usedQuestionIds.add(chosenQuestion.id);
+          } else {
+            chosenQuestion = synthesizeQuestion(dom.name, secId, 'easy', generatedQuestions.length);
+          }
+        }
+      } else if (tier === 'medium') {
+        if (medIdx < domainMedPool.length) {
+          chosenQuestion = domainMedPool[medIdx++];
+          usedQuestionIds.add(chosenQuestion.id);
+        } else {
+          const fallbackCandidates = shuffleArray(
+            questionBank.filter(q => q.difficulty === 'medium' && !usedQuestionIds.has(q.id))
+          );
+          if (fallbackCandidates.length > 0) {
+            chosenQuestion = fallbackCandidates[0];
+            usedQuestionIds.add(chosenQuestion.id);
+          } else {
+            chosenQuestion = synthesizeQuestion(dom.name, secId, 'medium', generatedQuestions.length);
+          }
+        }
+      } else {
+        if (hardIdx < domainHardPool.length) {
+          chosenQuestion = domainHardPool[hardIdx++];
+          usedQuestionIds.add(chosenQuestion.id);
+        } else {
+          const fallbackCandidates = shuffleArray(
+            questionBank.filter(q => q.difficulty === 'hard' && !usedQuestionIds.has(q.id))
+          );
+          if (fallbackCandidates.length > 0) {
+            chosenQuestion = fallbackCandidates[0];
+            usedQuestionIds.add(chosenQuestion.id);
+          } else {
+            chosenQuestion = synthesizeQuestion(dom.name, secId, 'hard', generatedQuestions.length);
+          }
+        }
+      }
+
       generatedQuestions.push({
-        ...q,
+        ...chosenQuestion,
         sectionId: secId
       });
     }

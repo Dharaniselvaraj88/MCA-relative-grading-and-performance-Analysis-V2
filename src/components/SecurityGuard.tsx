@@ -40,13 +40,6 @@ export const SecurityGuard: React.FC<SecurityGuardProps> = ({
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const [isScreenMasked, setIsScreenMasked] = useState(false);
-  const [interruptionModal, setInterruptionModal] = useState<{
-    isOpen: boolean;
-    attemptUsed: number;
-    remainingAttempts: number;
-    nextAttempt: number;
-    reason: string;
-  } | null>(null);
   const lastLoggedRef = useRef<Record<string, number>>({});
 
   const requestFullscreen = async () => {
@@ -375,97 +368,10 @@ export const SecurityGuard: React.FC<SecurityGuardProps> = ({
 
     window.addEventListener('click', handlePopUpClick, true);
 
-    let blurTimeout: any = null;
-
-    const handleWindowSwitch = (eventSource: string) => {
-      // Ignore if document is still visibly in foreground and focused inside the page
-      if (!document.hidden && document.visibilityState === 'visible' && document.hasFocus()) {
-        return;
-      }
-
-      if (isSwitchedOutRef.current) return; // Prevent duplicate triggers
-      isSwitchedOutRef.current = true;
-
-      const newCount = switchCountRef.current + 1;
-      switchCountRef.current = newCount;
-      setViolationCount(newCount);
-      onViolationCountChange?.(newCount);
-
-      // Mask screen immediately to protect question visibility
-      const currentAttempt = attemptCount || 1;
-      const maxAllowed = maxAttempts || 3;
-
-      if (currentAttempt < maxAllowed) {
-        const nextAttempt = currentAttempt + 1;
-        setIsScreenMasked(true);
-        setIsWindowFocused(false);
-        setInterruptionModal({
-          isOpen: true,
-          attemptUsed: currentAttempt,
-          remainingAttempts: maxAllowed - currentAttempt,
-          nextAttempt,
-          reason: 'Tab switch or window minimization detected'
-        });
-
-        logIncident(
-          'UNAUTHORIZED_WINDOW_SWITCH',
-          'HIGH',
-          `Tab switch detected (${eventSource}). Attempt ${currentAttempt} of ${maxAllowed} used. ${maxAllowed - currentAttempt} attempt(s) remaining. Savepoint preserved.`
-        );
-
-        onTabSwitchInterrupted?.(currentAttempt, nextAttempt);
-      } else {
-        // Exceeded 3 attempts!
-        setIsScreenMasked(true);
-        setIsWindowFocused(false);
-        setInterruptionModal({
-          isOpen: true,
-          attemptUsed: maxAllowed,
-          remainingAttempts: 0,
-          nextAttempt: maxAllowed,
-          reason: 'Maximum 3 attempts exceeded. Finalizing assessment.'
-        });
-
-        logIncident(
-          'UNAUTHORIZED_WINDOW_SWITCH',
-          'CRITICAL',
-          `Maximum allowed ${maxAllowed} attempts exceeded due to repeated tab switch (${eventSource}). Assessment terminated.`
-        );
-
-        onSecurityLockout?.('MAX_ATTEMPTS_EXCEEDED_TAB_SWITCH');
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.hidden || document.visibilityState === 'hidden') {
-        handleWindowSwitch('visibilitychange_hidden');
-      }
-    };
-
-    const handleWindowBlur = () => {
-      // Debounce window blur 120ms to allow clicks within form elements, then check focus
-      if (blurTimeout) clearTimeout(blurTimeout);
-      blurTimeout = setTimeout(() => {
-        if (document.hidden || document.visibilityState === 'hidden' || !document.hasFocus()) {
-          handleWindowSwitch('window_blur');
-        }
-      }, 120);
-    };
-
-    const handleWindowFocus = () => {
-      if (blurTimeout) {
-        clearTimeout(blurTimeout);
-        blurTimeout = null;
-      }
-    };
-
     // Fullscreen enforcement during assessment
     const handleFullscreenChange = () => {
       const isFS = !!document.fullscreenElement;
       setIsFullscreen(isFS);
-      if (!isFS && isActive) {
-        logIncident('UNAUTHORIZED_WINDOW_SWITCH', 'MEDIUM', 'Student exited full screen mode during live assessment.');
-      }
     };
 
     document.addEventListener('fullscreenchange', handleFullscreenChange);
@@ -478,20 +384,12 @@ export const SecurityGuard: React.FC<SecurityGuardProps> = ({
       requestFullscreen();
     }
 
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('blur', handleWindowBlur);
-    window.addEventListener('focus', handleWindowFocus);
-
     return () => {
-      if (blurTimeout) clearTimeout(blurTimeout);
       window.open = originalOpen;
       window.alert = originalAlert;
       window.confirm = originalConfirm;
       window.prompt = originalPrompt;
       window.removeEventListener('click', handlePopUpClick, true);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('blur', handleWindowBlur);
-      window.removeEventListener('focus', handleWindowFocus);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
       document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
@@ -499,133 +397,14 @@ export const SecurityGuard: React.FC<SecurityGuardProps> = ({
     };
   }, [isActive, studentInfo, userRole, onViolationCountChange, onSecurityLockout]);
 
-  const handleResumeFromModal = () => {
-    requestFullscreen();
-    isSwitchedOutRef.current = false;
+  const handleDismissMask = () => {
     setIsScreenMasked(false);
-    setInterruptionModal(null);
-    onResumeAssessment?.();
   };
 
   return (
     <div className="relative min-h-screen select-none">
-      {/* Interactive Interruption & Tab Switch 3-Attempt Modal */}
-      {interruptionModal?.isOpen && (
-        <div className="fixed inset-0 z-[99999] bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center p-4 sm:p-6 text-center text-white select-none animate-in fade-in duration-200">
-          <div className="max-w-md sm:max-w-lg w-full bg-slate-900 border-2 border-amber-500/50 rounded-3xl p-6 sm:p-8 shadow-2xl flex flex-col items-center text-center">
-            <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-4 border ${
-              interruptionModal.remainingAttempts > 0
-                ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
-                : 'bg-rose-500/20 border-rose-500/40 text-rose-400 animate-pulse'
-            }`}>
-              {interruptionModal.remainingAttempts > 0 ? (
-                <AlertTriangle className="w-9 h-9 animate-bounce" />
-              ) : (
-                <Lock className="w-9 h-9" />
-              )}
-            </div>
-
-            <span className="text-[10px] font-mono uppercase tracking-widest text-amber-400 font-bold mb-1">
-              COIMBATORE INSTITUTE OF TECHNOLOGY • PROCTORING SYSTEM
-            </span>
-
-            <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white mb-2">
-              {interruptionModal.remainingAttempts > 0
-                ? 'TAB SWITCH OVER DETECTED'
-                : 'MAXIMUM ATTEMPTS EXCEEDED'}
-            </h2>
-
-            <div className="inline-flex items-center gap-2 px-3 py-1 bg-amber-500/10 border border-amber-500/30 rounded-full text-[11px] font-mono text-amber-300 font-bold uppercase tracking-wider mb-3">
-              <span>Attempt {interruptionModal.attemptUsed} of {maxAttempts} Used</span>
-              <span>•</span>
-              <span className={interruptionModal.remainingAttempts > 0 ? 'text-amber-200' : 'text-rose-300'}>
-                {interruptionModal.remainingAttempts} Attempt(s) Remaining
-              </span>
-            </div>
-
-            <p className="text-xs sm:text-sm text-slate-300 font-medium mb-4 leading-relaxed">
-              {interruptionModal.remainingAttempts > 0 ? (
-                <>
-                  Switching tabs, minimizing windows, or navigating away during the examination is strictly prohibited. All your answers and timer progress have been safely preserved at your <strong>last savepoint</strong>.
-                </>
-              ) : (
-                <>
-                  You have exhausted all 3 permitted attempts for this assessment session. In accordance with examination regulations, your assessment has been automatically finalized from your last savepoint.
-                </>
-              )}
-            </p>
-
-            {/* Savepoint Confirmation Details Card */}
-            <div className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl p-4 mb-5 text-left text-xs font-mono">
-              <div className="flex items-center justify-between text-slate-400 mb-2 pb-2 border-b border-slate-800">
-                <span className="font-bold text-slate-300 flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                  <span>ASSESSMENT SAVEPOINT STATUS:</span>
-                </span>
-                <span className="text-emerald-400 font-bold text-[10px] uppercase bg-emerald-950/60 border border-emerald-800 px-2 py-0.5 rounded">
-                  Preserved
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-[11px]">
-                <div>
-                  <span className="text-slate-500 block">Candidate:</span>
-                  <span className="text-white font-bold truncate block">{studentInfo?.name || 'Candidate'}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block">Register No:</span>
-                  <span className="text-amber-300 font-bold">{studentInfo?.registerNo || 'N/A'}</span>
-                </div>
-                {savepointSummary && (
-                  <>
-                    <div>
-                      <span className="text-slate-500 block">Saved Answers:</span>
-                      <span className="text-emerald-300 font-bold">
-                        {savepointSummary.answeredCount} / {savepointSummary.totalQuestions} Questions
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block">Time Remaining:</span>
-                      <span className="text-blue-300 font-bold">{savepointSummary.timeRemainingText}</span>
-                    </div>
-                  </>
-                )}
-                <div>
-                  <span className="text-slate-500 block">Next Action:</span>
-                  <span className="text-slate-300 font-bold">
-                    {interruptionModal.remainingAttempts > 0
-                      ? `Resume Attempt ${interruptionModal.nextAttempt} of ${maxAttempts}`
-                      : 'Final Lockout'}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {interruptionModal.remainingAttempts > 0 ? (
-              <div className="w-full flex flex-col gap-2">
-                <button
-                  type="button"
-                  onClick={handleResumeFromModal}
-                  className="w-full py-3.5 px-5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white text-xs sm:text-sm font-black rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all cursor-pointer"
-                >
-                  <Maximize2 className="w-4 h-4" />
-                  <span>Resume Assessment from Last Savepoint (Attempt {interruptionModal.nextAttempt})</span>
-                </button>
-                <span className="text-[10px] text-rose-400 font-semibold mt-1">
-                  ⚠️ Note: Reaching 3 violations will permanently lock and conclude your assessment.
-                </span>
-              </div>
-            ) : (
-              <div className="w-full py-3 px-4 bg-rose-900/40 border border-rose-700/60 rounded-xl text-rose-200 text-xs font-mono font-bold flex items-center justify-center gap-2">
-                <Lock className="w-4 h-4 text-rose-400" />
-                <span>ALL 3 ATTEMPTS CONSUMED • PORTAL LOCKED</span>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Fallback Visual Masking Screen for unauthorized screenshot capture */}
-      {isScreenMasked && !interruptionModal?.isOpen && (
+      {isScreenMasked && (
         <div className="fixed inset-0 z-[99999] bg-slate-950 flex flex-col items-center justify-center p-6 text-center text-white select-none animate-in fade-in duration-100">
           <div className="w-16 h-16 rounded-2xl bg-rose-600/20 border border-rose-500/40 flex items-center justify-center mb-4 animate-pulse">
             <ShieldAlert className="w-10 h-10 text-rose-500" />
@@ -637,11 +416,11 @@ export const SecurityGuard: React.FC<SecurityGuardProps> = ({
             PROCTORING VIOLATION DETECTED
           </h2>
           <p className="text-xs sm:text-sm text-rose-200 font-medium max-w-md mb-4 leading-relaxed">
-            Unauthorized screenshot capture or external window focus detected. Your responses have been saved at the current savepoint.
+            Unauthorized screenshot capture attempt detected. Your responses remain safely saved.
           </p>
           <button
             type="button"
-            onClick={handleResumeFromModal}
+            onClick={handleDismissMask}
             className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow cursor-pointer flex items-center gap-2"
           >
             <Maximize2 className="w-4 h-4" />

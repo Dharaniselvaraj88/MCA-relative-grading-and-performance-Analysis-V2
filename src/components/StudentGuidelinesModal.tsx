@@ -187,7 +187,7 @@ export const StudentGuidelinesModal: React.FC<StudentGuidelinesModalProps> = ({
                 <strong>No Copy / Window Selection:</strong> Copying, cutting, text selection, and right-click context menus are completely prohibited during the assessment.
               </li>
               <li>
-                <strong>Zero-Tolerance Window & Tab Monitoring:</strong> Navigating away from the assessment window, minimizing the browser, or switching browser tabs is strictly prohibited. Any tab switch will immediately exit the assessment window with a warning and terminate the session.
+                <strong>Continuous Autosave & Session Recovery:</strong> All answers, question position, and remaining time are continuously autosaved. If an unexpected crash, window closure, or disconnection occurs, you can log back in and resume seamlessly.
               </li>
               <li>
                 <strong>Real-Time Auto-Save:</strong> All answers are continuously saved locally and in real time. Even in case of network drops, progress is preserved.

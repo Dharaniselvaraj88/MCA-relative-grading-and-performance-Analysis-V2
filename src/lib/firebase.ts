@@ -1331,6 +1331,17 @@ export function lookupEnrolledStudent(identifier: string): EnrolledStudent | nul
         }
       }
     }
+    if (DCS_SPECIFIC_STUDENTS[cleanId]) {
+      return {
+        sNo: 0,
+        userId: cleanId,
+        name: DCS_SPECIFIC_STUDENTS[cleanId].name,
+        programme: 'MSc Decision and Computing Sciences',
+        originalRegNo: cleanId,
+        assignedPassword: 'cit@123',
+        status: 'pending'
+      };
+    }
   } catch {}
 
   return null;
@@ -1725,10 +1736,14 @@ export async function saveAssessmentSavepointToFirestore(
     currentSection: string;
     currentQuestionIndex: number;
     timeRemainingSeconds: number;
-    attemptCount: number;
-    maxAttempts: number;
-    answeredCount: number;
+    attemptCount?: number;
+    maxAttempts?: number;
+    answeredCount?: number;
     responses: Record<string, any>;
+    currentTestQuestions?: any[];
+    startedAt?: number;
+    totalDurationSeconds?: number;
+    status?: string;
     savedAt: number;
   }
 ): Promise<void> {
@@ -1744,10 +1759,10 @@ export async function saveAssessmentSavepointToFirestore(
         studentName: savepointData.studentName,
         department: savepointData.department,
         lastHeartbeat: Date.now(),
-        status: 'active',
+        status: savepointData.status || 'in-progress',
         attemptCount: savepointData.attemptCount || 1,
         timeRemainingSeconds: savepointData.timeRemainingSeconds,
-        answeredCount: savepointData.answeredCount,
+        answeredCount: savepointData.answeredCount ?? Object.keys(savepointData.responses || {}).length,
         savepoint: savepointData
       },
       { merge: true }

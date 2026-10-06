@@ -1065,7 +1065,7 @@ export const ALL_QUESTIONS: Question[] = [
   }
 ];
 
-function shuffleArray<T>(array: T[]): T[] {
+export function shuffleArray<T>(array: T[]): T[] {
   const arr = [...array];
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -1075,11 +1075,10 @@ function shuffleArray<T>(array: T[]): T[] {
 }
 
 /**
- * Generates 50 questions for an assessment attempt (10 per domain):
- * - 4 Easy (40%)
- * - 3 Moderate/Medium (30%)
- * - 3 Difficulty/Hard (30%)
- * Refreshed randomly from the provided question bank for each attempt.
+ * Generates questions for an assessment attempt using stratified shuffling per domain:
+ * 1. Strictly keeps the fixed difficulty distribution sequence (4 Easy, 3 Medium, 3 Hard per domain)
+ * 2. Randomly shuffles WHICH specific questions fill each difficulty slot per domain per student attempt
+ * 3. Draws different specific questions from the bank when pool > slots, with zero repeats
  */
 export function generateTestQuestions(questionBank: Question[] = ALL_QUESTIONS): Question[] {
   if (!questionBank || questionBank.length === 0) {
@@ -1097,28 +1096,69 @@ export function generateTestQuestions(questionBank: Question[] = ALL_QUESTIONS):
 
     if (secQuestions.length === 0) return;
 
+    // 1. Keep the existing sequence of difficulty levels fixed per domain
+    const fixedSlots: ('easy' | 'medium' | 'hard')[] = secQuestions.length >= 10
+      ? secQuestions.slice(0, 10).map((q) => (q.difficulty as 'easy' | 'medium' | 'hard') || 'easy')
+      : ['easy', 'easy', 'easy', 'easy', 'medium', 'medium', 'medium', 'hard', 'hard', 'hard'];
+
+    // 2. Randomly shuffle WHICH specific questions fill each slot of that level, per domain, per student
     const easyPool = secQuestions.filter((q) => q.difficulty === 'easy');
     const mediumPool = secQuestions.filter((q) => q.difficulty === 'medium');
     const hardPool = secQuestions.filter((q) => q.difficulty === 'hard');
 
-    // Shuffle pools
     const shuffledEasy = shuffleArray(easyPool);
     const shuffledMedium = shuffleArray(mediumPool);
     const shuffledHard = shuffleArray(hardPool);
 
-    // Pick 40% easy (4), 30% medium (3), 30% hard (3)
-    let selectedEasy = shuffledEasy.slice(0, 4);
-    let selectedMedium = shuffledMedium.slice(0, 3);
-    let selectedHard = shuffledHard.slice(0, 3);
+    let easyIdx = 0;
+    let medIdx = 0;
+    let hardIdx = 0;
 
-    // Combine
-    let combined = [...selectedEasy, ...selectedMedium, ...selectedHard];
+    const combined: Question[] = [];
+    const usedIds = new Set<string>();
 
-    // Fallback if pool doesn't have exact counts (e.g. custom user bank)
+    for (const diff of fixedSlots) {
+      let chosen: Question | undefined;
+      if (diff === 'easy') {
+        while (easyIdx < shuffledEasy.length && usedIds.has(shuffledEasy[easyIdx].id)) easyIdx++;
+        if (easyIdx < shuffledEasy.length) {
+          chosen = shuffledEasy[easyIdx++];
+        }
+      } else if (diff === 'medium') {
+        while (medIdx < shuffledMedium.length && usedIds.has(shuffledMedium[medIdx].id)) medIdx++;
+        if (medIdx < shuffledMedium.length) {
+          chosen = shuffledMedium[medIdx++];
+        }
+      } else if (diff === 'hard') {
+        while (hardIdx < shuffledHard.length && usedIds.has(shuffledHard[hardIdx].id)) hardIdx++;
+        if (hardIdx < shuffledHard.length) {
+          chosen = shuffledHard[hardIdx++];
+        }
+      }
+
+      // Fallback if that specific tier ran out in the domain bank
+      if (!chosen) {
+        const remainingPool = secQuestions.filter((q) => !usedIds.has(q.id));
+        if (remainingPool.length > 0) {
+          chosen = shuffleArray(remainingPool)[0];
+        }
+      }
+
+      if (chosen) {
+        usedIds.add(chosen.id);
+        combined.push(chosen);
+      }
+    }
+
+    // Additional fallback if combined has fewer than 10 questions
     if (combined.length < 10 && secQuestions.length > combined.length) {
-      const remainingPool = secQuestions.filter((q) => !combined.some((p) => p.id === q.id));
+      const remainingPool = secQuestions.filter((q) => !usedIds.has(q.id));
       const needed = 10 - combined.length;
-      combined = [...combined, ...shuffleArray(remainingPool).slice(0, needed)];
+      const extras = shuffleArray(remainingPool).slice(0, needed);
+      extras.forEach((q) => {
+        usedIds.add(q.id);
+        combined.push(q);
+      });
     }
 
     // Renumber sequentially for this test while strictly preserving original text formatting

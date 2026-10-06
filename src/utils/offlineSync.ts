@@ -21,8 +21,11 @@ export function saveActiveAssessmentSession(session: ActiveAssessmentSession): v
   try {
     const payload = {
       ...session,
+      status: session.status || 'in-progress',
       attemptCount: session.attemptCount || 1,
       maxAttempts: session.maxAttempts || 3,
+      startedAt: session.startedAt || (Date.now() - ((session.totalDurationSeconds || 3600) - session.timeRemainingSeconds) * 1000),
+      totalDurationSeconds: session.totalDurationSeconds || 3600,
       savedAt: Date.now()
     };
     const jsonStr = JSON.stringify(payload);
@@ -35,6 +38,30 @@ export function saveActiveAssessmentSession(session: ActiveAssessmentSession): v
   } catch (error) {
     console.error('Failed to save active assessment session to localStorage:', error);
   }
+}
+
+/**
+ * Calculates the exact remaining seconds for an active assessment session:
+ * Deducts the elapsed time since the test started (or since last savepoint).
+ */
+export function getSessionRemainingSeconds(session: ActiveAssessmentSession): number {
+  if (!session) return 0;
+  const now = Date.now();
+  if (session.startedAt) {
+    const elapsedSec = Math.floor((now - session.startedAt) / 1000);
+    const totalDuration = session.totalDurationSeconds || session.timeRemainingSeconds || 3600;
+    return totalDuration - elapsedSec;
+  }
+  const elapsedSinceSave = Math.floor((now - (session.savedAt || now)) / 1000);
+  return (session.timeRemainingSeconds || 0) - elapsedSinceSave;
+}
+
+/**
+ * Checks whether an active assessment session's time window has expired while disconnected.
+ */
+export function isSessionExpired(session: ActiveAssessmentSession): boolean {
+  if (!session) return false;
+  return getSessionRemainingSeconds(session) <= 0;
 }
 
 /**
@@ -83,7 +110,7 @@ export function clearActiveAssessmentSession(registerNo?: string): void {
 }
 
 /**
- * Checks whether a student has an active, resumable savepoint with attempts remaining (< 3).
+ * Checks whether a student has an active, resumable savepoint.
  */
 export function hasResumableSavepoint(registerNo: string): boolean {
   if (!registerNo) return false;
@@ -91,8 +118,7 @@ export function hasResumableSavepoint(registerNo: string): boolean {
   if (!session || !session.currentTestQuestions || session.currentTestQuestions.length === 0) {
     return false;
   }
-  const attempt = session.attemptCount || 1;
-  return attempt <= 3 && session.timeRemainingSeconds > 0 && session.status !== 'completed';
+  return session.status !== 'completed';
 }
 
 /**

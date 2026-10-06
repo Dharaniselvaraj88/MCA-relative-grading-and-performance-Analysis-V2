@@ -259,9 +259,9 @@ export const StudentConsentModal: React.FC<StudentConsentModalProps> = ({
                   className="mt-0.5 w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer shrink-0"
                 />
                 <div className="space-y-0.5">
-                  <strong className="block text-slate-900 font-bold">2. Zero-Tolerance Tab Switch & Screenshot Prohibition Consent</strong>
+                  <strong className="block text-slate-900 font-bold">2. Anti-Cheating & Screenshot Prohibition Consent</strong>
                   <p className="text-[11px] text-slate-600">
-                    I agree to strict anti-cheating rules: switching browser tabs, navigating away from the assessment, or taking screenshots during the examination is strictly prohibited. Any violation will immediately exit the window with a security violation warning.
+                    I agree to institutional anti-cheating regulations: capturing screenshots, developer console inspection, and unauthorized duplication during the examination are strictly prohibited.
                   </p>
                 </div>
               </label>

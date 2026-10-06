@@ -16,6 +16,7 @@ import {
   Triangle,
   BarChart3,
   Bookmark,
+  ChevronLeft,
   ChevronRight,
   RotateCcw,
   ShieldAlert,
@@ -292,6 +293,24 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
 
   const globalQuestionNumber = overallQuestionIndex + 1;
   const isQuestion50 = globalQuestionNumber === totalQuestionsCount || (isLastSection && currentQuestionIndex >= sectionQuestions.length - 1);
+  const isQuestion1 = overallQuestionIndex === 0;
+
+  const handlePrev = () => {
+    setSubmissionWarning(null);
+    setIsConfirmingSubmit(false);
+    if (currentQuestionIndex > 0) {
+      onChangeQuestionIndex(currentQuestionIndex - 1);
+    } else {
+      // Move to previous section if available
+      const secIdx = availableSections.findIndex((s) => s.id === currentSection);
+      if (secIdx > 0) {
+        const prevSec = availableSections[secIdx - 1];
+        const prevSecQs = questions.filter((q) => q.sectionId === prevSec.id);
+        onChangeSection(prevSec.id);
+        onChangeQuestionIndex(Math.max(0, prevSecQs.length - 1));
+      }
+    }
+  };
 
   const handleNext = () => {
     setSubmissionWarning(null);
@@ -839,6 +858,18 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
               </div>
 
               <div className="flex items-center gap-2">
+                {/* Previous Question button */}
+                {!isQuestion1 && (
+                  <button
+                    id="btn-prev-question-bottom"
+                    onClick={handlePrev}
+                    className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg border border-slate-300 shadow-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>Previous</span>
+                  </button>
+                )}
+
                 {/* Submit Assessment button */}
                 <button
                   id="btn-submit-assessment-bottom"

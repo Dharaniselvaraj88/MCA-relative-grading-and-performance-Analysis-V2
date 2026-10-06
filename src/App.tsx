@@ -98,16 +98,21 @@ export default function App() {
         const parsed: ActiveAssessmentSession = JSON.parse(saved);
         if (parsed && parsed.student && parsed.responses && parsed.currentTestQuestions) {
           const now = Date.now();
-          const elapsedSec = Math.floor((now - (parsed.savedAt || now)) / 1000);
-          const remainingSec = Math.max(0, parsed.timeRemainingSeconds - elapsedSec);
-          // If interrupted (e.g. unknown reload or unexpected closure), increment attempt count (up to 3)
+          let remainingSec: number;
+          if (parsed.startedAt) {
+            const elapsedSec = Math.floor((now - parsed.startedAt) / 1000);
+            const totalDur = parsed.totalDurationSeconds || parsed.timeRemainingSeconds || 3600;
+            remainingSec = totalDur - elapsedSec;
+          } else {
+            const elapsedSec = Math.floor((now - (parsed.savedAt || now)) / 1000);
+            remainingSec = (parsed.timeRemainingSeconds || 0) - elapsedSec;
+          }
+
           const currentAttempt = parsed.attemptCount || 1;
-          const wasInterrupted = parsed.status === 'interrupted' || (now - (parsed.savedAt || now)) > 4000;
-          const nextAttempt = wasInterrupted ? Math.min(3, currentAttempt + 1) : currentAttempt;
 
           return {
             ...parsed,
-            attemptCount: nextAttempt,
+            attemptCount: currentAttempt,
             timeRemainingSeconds: remainingSec
           };
         }
@@ -120,7 +125,10 @@ export default function App() {
 
   const [viewState, setViewState] = useState<'auth' | 'assessment' | 'submission' | 'report' | 'admin'>(() => {
     if (initialUrlParams.view && initialUrlParams.view !== 'admin') return initialUrlParams.view as any;
-    return savedSessionData && savedSessionData.timeRemainingSeconds > 0 ? 'assessment' : 'auth';
+    if (savedSessionData) {
+      return savedSessionData.timeRemainingSeconds > 0 ? 'assessment' : 'submission';
+    }
+    return 'auth';
   });
   const [authInitialTab, setAuthInitialTab] = useState<'student' | 'faculty' | 'admin'>(() =>
     initialUrlParams.tab || 'student'
@@ -600,9 +608,69 @@ export default function App() {
     };
   }, [viewState, userRole]);
 
+  // Ref holding test timing metrics for accurate duration and elapsed time tracking
+  const testStartedAtRef = useRef<number>(savedSessionData?.startedAt || Date.now());
+  const testTotalDurationRef = useRef<number>(savedSessionData?.totalDurationSeconds || 3600);
+
   // Ref holding current assessment session state for synchronous save on interrupts
   const currentSessionRef = useRef<ActiveAssessmentSession | null>(null);
 
+  // FEATURE 2: Silent Background Continuous Autosave Engine
+  // Triggers silently in the background:
+  // - Every time the student submits/selects/clears/flags an answer
+  // - Every time the student navigates to a different question (next/prev/jump)
+  // - Every 15-30 seconds on a fixed interval as a safety net
+  const performAutosave = (override?: {
+    responses?: Record<string, StudentResponse>;
+    currentQuestionIndex?: number;
+    currentSection?: SectionId;
+    timeRemainingSeconds?: number;
+  }) => {
+    if (viewState !== 'assessment' || !student) return;
+
+    const curResponses = override?.responses ?? responses;
+    const curQIdx = override?.currentQuestionIndex ?? currentQuestionIndex;
+    const curSec = override?.currentSection ?? currentSection;
+    const curTime = override?.timeRemainingSeconds ?? timeRemainingSeconds;
+
+    const sessionPayload: ActiveAssessmentSession = {
+      student,
+      currentTestQuestions, // The exact shuffled question sequence assigned from Feature 1
+      responses: curResponses, // Every question answered so far
+      timeRemainingSeconds: curTime, // Exact time remaining
+      currentSection: curSec,
+      currentQuestionIndex: curQIdx, // Exact question index currently on
+      startedAt: testStartedAtRef.current,
+      totalDurationSeconds: testTotalDurationRef.current,
+      savedAt: Date.now(),
+      status: 'in-progress',
+      attemptCount: attemptCount || 1,
+      maxAttempts: 3
+    };
+
+    // 1. Synchronously persist to localStorage (instant, durable across crashes & reload)
+    saveActiveAssessmentSession(sessionPayload);
+
+    // 2. Silently update Firestore savepoint in background (non-blocking, quota-safe)
+    saveAssessmentSavepointToFirestore(student.registerNo, {
+      studentName: student.name,
+      department: student.department,
+      currentSection: curSec,
+      currentQuestionIndex: curQIdx,
+      timeRemainingSeconds: curTime,
+      startedAt: testStartedAtRef.current,
+      totalDurationSeconds: testTotalDurationRef.current,
+      attemptCount: attemptCount || 1,
+      maxAttempts: 3,
+      answeredCount: (Object.values(curResponses) as StudentResponse[]).filter((r) => r.selectedOption !== null && r.selectedOption !== undefined).length,
+      responses: curResponses,
+      currentTestQuestions,
+      status: 'in-progress',
+      savedAt: Date.now()
+    }).catch(() => {});
+  };
+
+  // Synchronize currentSessionRef for synchronous lifecycle interrupts (beforeunload/pagehide)
   useEffect(() => {
     if (viewState === 'assessment' && student) {
       currentSessionRef.current = {
@@ -612,9 +680,11 @@ export default function App() {
         timeRemainingSeconds,
         currentSection,
         currentQuestionIndex,
+        startedAt: testStartedAtRef.current,
+        totalDurationSeconds: testTotalDurationRef.current,
         attemptCount,
         maxAttempts: 3,
-        status: 'active',
+        status: 'in-progress',
         savedAt: Date.now()
       };
     } else {
@@ -622,38 +692,26 @@ export default function App() {
     }
   }, [viewState, student, currentTestQuestions, responses, timeRemainingSeconds, currentSection, currentQuestionIndex, attemptCount]);
 
-  // Real-time continuous auto-save of active assessment session to localStorage and Firestore
+  // Feature 2 Trigger: Fixed interval safety net autosave every 15 seconds
   useEffect(() => {
-    if (viewState === 'assessment' && student && isTimerActive) {
-      const activeSession: ActiveAssessmentSession = {
-        student,
-        currentTestQuestions,
-        responses,
-        timeRemainingSeconds,
-        currentSection,
-        currentQuestionIndex,
-        attemptCount,
-        maxAttempts: 3,
-        status: 'active',
-        savedAt: Date.now()
-      };
-      saveActiveAssessmentSession(activeSession);
+    if (viewState !== 'assessment' || !student || !isTimerActive) return;
+    const intervalTimer = setInterval(() => {
+      performAutosave();
+    }, 15000); // 15 seconds interval
+    return () => clearInterval(intervalTimer);
+  }, [viewState, student, isTimerActive, responses, timeRemainingSeconds, currentSection, currentQuestionIndex]);
 
-      // Save savepoint asynchronously to Firestore
-      saveAssessmentSavepointToFirestore(student.registerNo, {
-        studentName: student.name,
-        department: student.department,
-        currentSection,
-        currentQuestionIndex,
-        timeRemainingSeconds,
-        attemptCount,
-        maxAttempts: 3,
-        answeredCount: Object.keys(responses).length,
-        responses,
-        savedAt: Date.now()
-      });
-    }
-  }, [viewState, student, isTimerActive, responses, timeRemainingSeconds, currentSection, currentQuestionIndex, currentTestQuestions, attemptCount]);
+  // Feature 2 Trigger: Question navigation handlers (autosave on every navigation / jump)
+  const handleChangeQuestionIndex = (index: number) => {
+    setCurrentQuestionIndex(index);
+    performAutosave({ currentQuestionIndex: index });
+  };
+
+  const handleChangeSection = (sectionId: SectionId) => {
+    setCurrentSection(sectionId);
+    setCurrentQuestionIndex(0);
+    performAutosave({ currentSection: sectionId, currentQuestionIndex: 0 });
+  };
 
   // Auto-Save Assessment State on Application Interrupts (reload, tab close, window hide, offline, freeze)
   useEffect(() => {
@@ -665,7 +723,7 @@ export default function App() {
       if (currentSessionRef.current) {
         saveActiveAssessmentSession({
           ...currentSessionRef.current,
-          status: 'interrupted',
+          status: 'in-progress',
           savedAt: Date.now()
         });
         console.log('Assessment answers auto-saved due to application interrupt.');
@@ -752,45 +810,137 @@ export default function App() {
     };
   }, [isTimerActive, timeRemainingSeconds]);
 
-  // Onboarding Student Handler - Refresh & Shuffle Questions, or Resume Active Saved Session
+  // FEATURE 3: Auto-submit test attempt when allowed time window has expired while disconnected
+  const handleAutoSubmitExpiredSession = async (expiredSession: ActiveAssessmentSession) => {
+    const sessionStudent = expiredSession.student;
+    if (!sessionStudent) return;
+
+    const activeResponses = expiredSession.responses || {};
+    const activeQuestions = expiredSession.currentTestQuestions || [];
+    const baseDuration = expiredSession.totalDurationSeconds || 3600;
+
+    clearActiveAssessmentSession(sessionStudent.registerNo);
+    setIsTimerActive(false);
+    if (timerRef.current) clearInterval(timerRef.current);
+
+    if (sessionStudent.registerNo) {
+      releaseActiveStudentSession(sessionStudent.registerNo.trim().toUpperCase(), sessionStudent.deviceId).catch(() => {});
+    }
+
+    const generatedReport = calculateCognitiveProfile(
+      sessionStudent,
+      activeResponses,
+      baseDuration,
+      activeQuestions
+    );
+
+    setStudent(sessionStudent);
+    setCurrentTestQuestions(activeQuestions);
+    setResponses(activeResponses);
+    setReport(generatedReport);
+
+    const newSavedSub: SavedSubmission = {
+      id: `SUB-${Date.now()}`,
+      student: sessionStudent,
+      submittedAt: getCurrentTimestamp(),
+      report: generatedReport
+    };
+
+    // 1. Persist to localStorage backup
+    try {
+      const raw = localStorage.getItem('CIT_COGNITIVE_SUBMISSIONS');
+      const list: SavedSubmission[] = raw ? JSON.parse(raw) : [];
+      const updated = [newSavedSub, ...list.filter((s) => s.id !== newSavedSub.id)];
+      localStorage.setItem('CIT_COGNITIVE_SUBMISSIONS', JSON.stringify(updated));
+    } catch (_) {}
+
+    // 2. Update React application state
+    setSavedSubmissions((prev) => [newSavedSub, ...prev.filter((s) => s.id !== newSavedSub.id)]);
+
+    // 3. Attempt cloud persistence
+    if (isOnline()) {
+      try {
+        await saveSubmissionToFirestore(newSavedSub);
+      } catch (err) {
+        queueOfflineSubmission(newSavedSub);
+      }
+    } else {
+      queueOfflineSubmission(newSavedSub);
+    }
+
+    setViewState('submission');
+    setResumeNotice('⏰ Time Expired: Your assessment time elapsed while disconnected. The test has been automatically submitted with all saved answers.');
+  };
+
+  // FEATURE 3: Auto-submit expired session detected on initial application mount
+  useEffect(() => {
+    if (savedSessionData && savedSessionData.student && savedSessionData.timeRemainingSeconds <= 0 && viewState === 'submission' && !report) {
+      handleAutoSubmitExpiredSession(savedSessionData);
+    }
+  }, []);
+
+  // Onboarding Student Handler - FEATURE 1 & 3: Stratified Shuffled Test Generation OR Seamless Resume
   const handleAuthenticateStudent = (authenticatedStudent: StudentInfo) => {
     const trimmedRegNo = authenticatedStudent.registerNo.trim().toUpperCase();
 
-    // Check if an active saved session exists in localStorage for this student
+    // Check if an in-progress saved session exists for this student
     const activeSaved = loadActiveAssessmentSession(trimmedRegNo);
 
-    if (activeSaved && activeSaved.responses && activeSaved.currentTestQuestions) {
-      const prevAttempt = activeSaved.attemptCount || 1;
-      // When re-authenticating after an interruption or window termination, advance to next attempt (up to 3)
-      const nextAttempt = activeSaved.status === 'interrupted' ? Math.min(3, prevAttempt + 1) : Math.min(3, prevAttempt);
+    if (activeSaved && activeSaved.responses && activeSaved.currentTestQuestions && activeSaved.currentTestQuestions.length > 0) {
+      const now = Date.now();
+      let remainingSec: number;
 
-      if (prevAttempt >= 3 && activeSaved.status === 'interrupted') {
-        alert(`🔒 MAXIMUM ATTEMPTS EXCEEDED: Student ${authenticatedStudent.name} (${authenticatedStudent.registerNo}) has already utilized all 3 permitted attempts for this assessment. Re-attempts are strictly barred.`);
+      // Restore remaining time correctly: Deduct elapsed time since test started
+      if (activeSaved.startedAt) {
+        const elapsedSec = Math.floor((now - activeSaved.startedAt) / 1000);
+        const totalDur = activeSaved.totalDurationSeconds || ((activeAssessmentTest?.durationMinutes || 60) * 60);
+        remainingSec = totalDur - elapsedSec;
+      } else {
+        const elapsedSec = Math.floor((now - (activeSaved.savedAt || now)) / 1000);
+        remainingSec = (activeSaved.timeRemainingSeconds || 0) - elapsedSec;
+      }
+
+      // Feature 3: If the test's time window has already expired while the student was disconnected,
+      // auto-submit the test with whatever answers were saved, rather than allowing further resume.
+      if (remainingSec <= 0) {
+        handleAutoSubmitExpiredSession(activeSaved);
         return;
       }
 
-      // Resume student session with saved responses, questions, remaining time, and attempt count
-      setAttemptCount(nextAttempt);
-      setStudent(activeSaved.student);
+      // Feature 3: Detect in-progress attempt and resume automatically:
+      // 1. Load the EXACT same shuffled question sequence originally received (do NOT re-shuffle!)
       setCurrentTestQuestions(activeSaved.currentTestQuestions);
+
+      // 2. Return to the EXACT SAME QUESTION they were on when the exit happened (not first, not next)
+      const targetSection = activeSaved.currentSection || activeSaved.currentTestQuestions[0]?.sectionId || 'calculus';
+      const targetIndex = activeSaved.currentQuestionIndex || 0;
+      setCurrentSection(targetSection);
+      setCurrentQuestionIndex(targetIndex);
+
+      // 3. Restore all previously given answers so they are not lost
       setResponses(activeSaved.responses);
 
-      const now = Date.now();
-      const elapsedSec = Math.floor((now - (activeSaved.savedAt || now)) / 1000);
-      const remainingSec = Math.max(10, activeSaved.timeRemainingSeconds - elapsedSec);
+      // 4. Restore remaining time correctly (deduct time already elapsed since test started)
       setTimeRemainingSeconds(remainingSec);
-      setCurrentSection(activeSaved.currentSection || 'calculus');
-      setCurrentQuestionIndex(activeSaved.currentQuestionIndex || 0);
+      setStudent(activeSaved.student);
 
-      // Save updated active status to savepoint
+      testStartedAtRef.current = activeSaved.startedAt || (now - ((activeSaved.totalDurationSeconds || 3600) - remainingSec) * 1000);
+      testTotalDurationRef.current = activeSaved.totalDurationSeconds || 3600;
+
+      const nextAttempt = (activeSaved.attemptCount || 1);
+      setAttemptCount(nextAttempt);
+
+      // Persist active in-progress status
       saveActiveAssessmentSession({
         ...activeSaved,
-        attemptCount: nextAttempt,
-        status: 'active',
+        timeRemainingSeconds: remainingSec,
+        currentSection: targetSection,
+        currentQuestionIndex: targetIndex,
+        status: 'in-progress',
         savedAt: Date.now()
       });
 
-      setResumeNotice(`Assessment Resumed: Attempt ${nextAttempt} of 3 in progress. Resumed from last savepoint (${Object.keys(activeSaved.responses).length} saved answers).`);
+      setResumeNotice(`Assessment Resumed: Welcome back ${authenticatedStudent.name}. Resumed at Question ${targetIndex + 1} with ${Object.keys(activeSaved.responses).length} saved answers. Remaining time: ${Math.floor(remainingSec / 60)}m ${remainingSec % 60}s.`);
       setTimeout(() => setResumeNotice(null), 8000);
 
       setIsTimerActive(true);
@@ -808,24 +958,48 @@ export default function App() {
       return;
     }
 
+    // Fresh Attempt: Generate test using FEATURE 1 Stratified Shuffling per domain
     clearActiveAssessmentSession(trimmedRegNo);
     setAttemptCount(1);
     const currentActiveTest = getActiveAssessmentTest();
     const testDurationSec = (currentActiveTest?.durationMinutes || 60) * 60;
+    const totalAllocatedTime = testDurationSec + (assessmentExtraMinutes * 60);
+
+    // Feature 1: Stratified shuffle per domain preserving difficulty distribution
     const freshSampledTest = currentActiveTest
       ? generateQuestionsForTestConfig(currentActiveTest, activeQuestionBank)
       : generateTestQuestions(activeQuestionBank);
+
     setCurrentTestQuestions(freshSampledTest);
     setStudent(authenticatedStudent);
     setPendingStudent(null);
     setResponses({});
-    setTimeRemainingSeconds(testDurationSec + (assessmentExtraMinutes * 60));
-    if (freshSampledTest.length > 0 && freshSampledTest[0].sectionId) {
-      setCurrentSection(freshSampledTest[0].sectionId);
-    } else {
-      setCurrentSection('calculus');
-    }
+    setTimeRemainingSeconds(totalAllocatedTime);
+    const initialSection = freshSampledTest.length > 0 && freshSampledTest[0].sectionId ? freshSampledTest[0].sectionId : 'calculus';
+    setCurrentSection(initialSection);
     setCurrentQuestionIndex(0);
+
+    const now = Date.now();
+    testStartedAtRef.current = now;
+    testTotalDurationRef.current = totalAllocatedTime;
+
+    // Immediately persist initial in-progress state to lock in this exact assigned question sequence
+    // against any attempt to force-close and get a fresh set of questions
+    saveActiveAssessmentSession({
+      student: authenticatedStudent,
+      currentTestQuestions: freshSampledTest,
+      responses: {},
+      timeRemainingSeconds: totalAllocatedTime,
+      currentSection: initialSection,
+      currentQuestionIndex: 0,
+      startedAt: now,
+      totalDurationSeconds: totalAllocatedTime,
+      status: 'in-progress',
+      savedAt: now,
+      attemptCount: 1,
+      maxAttempts: 3
+    });
+
     setIsLaunchingCountdown(false);
     setIsTimerActive(true); // Starts the assessment timer immediately
     setViewState('assessment');
@@ -1108,43 +1282,55 @@ export default function App() {
     }
   };
 
-  // Option selection
+  // Option selection - Triggers immediate background autosave
   const handleSelectOption = (questionId: string, optionIndex: number) => {
-    setResponses((prev) => ({
-      ...prev,
-      [questionId]: {
-        questionId,
-        selectedOption: optionIndex,
-        timeSpentSeconds: (prev[questionId]?.timeSpentSeconds || 0) + 5,
-        isMarkedForReview: prev[questionId]?.isMarkedForReview || false,
-        visited: true
-      }
-    }));
+    setResponses((prev) => {
+      const updated = {
+        ...prev,
+        [questionId]: {
+          questionId,
+          selectedOption: optionIndex,
+          timeSpentSeconds: (prev[questionId]?.timeSpentSeconds || 0) + 1,
+          isMarkedForReview: prev[questionId]?.isMarkedForReview || false,
+          visited: true
+        }
+      };
+      performAutosave({ responses: updated });
+      return updated;
+    });
   };
 
-  // Clear selected option
+  // Clear selected option - Triggers immediate background autosave
   const handleClearOption = (questionId: string) => {
-    setResponses((prev) => ({
-      ...prev,
-      [questionId]: {
-        ...prev[questionId],
-        selectedOption: null
-      }
-    }));
+    setResponses((prev) => {
+      const updated = {
+        ...prev,
+        [questionId]: {
+          ...prev[questionId],
+          selectedOption: null
+        }
+      };
+      performAutosave({ responses: updated });
+      return updated;
+    });
   };
 
-  // Toggle Mark For Review
+  // Toggle Mark For Review - Triggers immediate background autosave
   const handleToggleMarkForReview = (questionId: string) => {
-    setResponses((prev) => ({
-      ...prev,
-      [questionId]: {
-        questionId,
-        selectedOption: prev[questionId]?.selectedOption ?? null,
-        timeSpentSeconds: prev[questionId]?.timeSpentSeconds || 0,
-        isMarkedForReview: !prev[questionId]?.isMarkedForReview,
-        visited: true
-      }
-    }));
+    setResponses((prev) => {
+      const updated = {
+        ...prev,
+        [questionId]: {
+          questionId,
+          selectedOption: prev[questionId]?.selectedOption ?? null,
+          timeSpentSeconds: prev[questionId]?.timeSpentSeconds || 0,
+          isMarkedForReview: !prev[questionId]?.isMarkedForReview,
+          visited: true
+        }
+      };
+      performAutosave({ responses: updated });
+      return updated;
+    });
   };
 
   // Evaluate & Submit Assessment
@@ -1157,7 +1343,7 @@ export default function App() {
     const activeQuestions = currentSession?.currentTestQuestions || currentTestQuestions;
     const activeTimeRemaining = currentSession?.timeRemainingSeconds ?? timeRemainingSeconds;
 
-    clearActiveAssessmentSession();
+    clearActiveAssessmentSession(currentStudent.registerNo);
     setIsTimerActive(false);
     if (timerRef.current) clearInterval(timerRef.current);
 
@@ -1246,6 +1432,12 @@ export default function App() {
 
     const isScreenshot = reason === 'SCREENSHOT_DETECTED' || reason.includes('SCREENSHOT') || reason.includes('PRINT');
     const isTabSwitch = reason === 'TAB_SWITCH_DETECTED' || reason.includes('TAB');
+
+    // Requirement 2: Remove tab switch detection. No action should be taken on that.
+    if (isTabSwitch) {
+      return;
+    }
+
     const isMaxAttempts = reason === 'MAX_ATTEMPTS_EXCEEDED_TAB_SWITCH' || reason.includes('MAX_ATTEMPTS');
 
     let violationType: 'TAB_SWITCH' | 'SCREENSHOT' | 'WINDOW_SWITCH' = 'WINDOW_SWITCH';
@@ -1355,40 +1547,10 @@ export default function App() {
     setViewState('auth');
   };
 
-  // Handle tab switch interrupted event from SecurityGuard (allows up to 3 attempts, auto-saving savepoint)
-  const handleTabSwitchInterrupted = (usedAttempt: number, nextAttempt: number) => {
-    setAttemptCount(nextAttempt);
-    const curStudent = student || currentSessionRef.current?.student;
-    if (curStudent) {
-      const updatedSession: ActiveAssessmentSession = {
-        student: curStudent,
-        currentTestQuestions: currentSessionRef.current?.currentTestQuestions || currentTestQuestions,
-        responses: currentSessionRef.current?.responses || responses,
-        timeRemainingSeconds: currentSessionRef.current?.timeRemainingSeconds ?? timeRemainingSeconds,
-        currentSection: currentSessionRef.current?.currentSection || currentSection,
-        currentQuestionIndex: currentSessionRef.current?.currentQuestionIndex ?? currentQuestionIndex,
-        savedAt: Date.now(),
-        attemptCount: nextAttempt,
-        maxAttempts: 3,
-        status: 'interrupted',
-        lastTerminationReason: 'TAB_SWITCH_OVER'
-      };
-      saveActiveAssessmentSession(updatedSession);
-      saveAssessmentSavepointToFirestore(curStudent.registerNo, {
-        studentName: curStudent.name,
-        department: curStudent.department,
-        currentSection: updatedSession.currentSection,
-        currentQuestionIndex: updatedSession.currentQuestionIndex,
-        timeRemainingSeconds: updatedSession.timeRemainingSeconds,
-        attemptCount: nextAttempt,
-        maxAttempts: 3,
-        answeredCount: Object.keys(updatedSession.responses).length,
-        responses: updatedSession.responses,
-        savedAt: Date.now()
-      });
-    }
-    // Pause timer while the student reviews the interruption warning modal
-    setIsTimerActive(false);
+  // Handle tab switch interrupted event: Requirement 2: Remove tab switch detection. No action should be taken on that.
+  const handleTabSwitchInterrupted = (_usedAttempt: number, _nextAttempt: number) => {
+    // Intentionally no-op per user requirement: No action should be taken on tab switch
+    return;
   };
 
   const handleResumeAssessmentFromSavepoint = () => {
@@ -1951,8 +2113,8 @@ export default function App() {
               onSelectOption={handleSelectOption}
               onClearOption={handleClearOption}
               onToggleMarkForReview={handleToggleMarkForReview}
-              onChangeSection={setCurrentSection}
-              onChangeQuestionIndex={setCurrentQuestionIndex}
+              onChangeSection={handleChangeSection}
+              onChangeQuestionIndex={handleChangeQuestionIndex}
               onSubmitAssessment={handleFinalSubmission}
               isOnline={isOnlineState}
               timeRemainingSeconds={timeRemainingSeconds}

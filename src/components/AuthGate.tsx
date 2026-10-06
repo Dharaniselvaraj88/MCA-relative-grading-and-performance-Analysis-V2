@@ -3,7 +3,7 @@ import { StudentInfo, SavedSubmission, FacultyCredential, StudentPinSchedule, As
 import { saveSecurityLogToFirestore, DCS_SPECIFIC_STUDENTS, lookupEnrolledStudent, checkActiveStudentSession, checkStudentPriorSubmission, subscribeAssessmentTests, recordStudentLoginToFirestore } from '../lib/firebase';
 import { getCurrentTimestamp } from '../utils/dateUtils';
 import { isStudentPinActive } from '../utils/scheduleUtils';
-import { getActiveAssessmentTest, getConfiguredDepartments } from '../utils/testManagerUtils';
+import { getActiveAssessmentTest, getConfiguredDepartments, findStudentInRoster, validateStudentLoginAgainstRoster, isStudentNameMatching, isStudentDepartmentMatching } from '../utils/testManagerUtils';
 import { hasResumableSavepoint, loadActiveAssessmentSession } from '../utils/offlineSync';
 import { StudentConsentModal } from './StudentConsentModal';
 import { StudentGuidelinesModal } from './StudentGuidelinesModal';
@@ -199,15 +199,24 @@ export const AuthGate: React.FC<AuthGateProps> = ({
   const l3Pct = totalQuestions > 0 ? Math.max(0, 100 - (l1Pct + l2Pct)) : 20;
 
   const availableProgrammes = useMemo(() => {
-    const list = (activeTest.programmes && activeTest.programmes.length > 0)
-      ? [...activeTest.programmes]
-      : configuredDepts.map(d => d.name);
-
-    if (!list.some(p => p.toLowerCase().includes('vlsi'))) {
-      list.push('B.E. Electronics Engineering (VLSI Design and Technology)');
+    const progSet = new Set<string>();
+    (activeTest.programmes || []).forEach(p => progSet.add(p));
+    configuredDepts.forEach(d => progSet.add(d.name));
+    (activeTest.enrolledStudents || []).forEach(s => {
+      if (s.programme) progSet.add(s.programme);
+    });
+    if (![...progSet].some(p => p.toLowerCase().includes('vlsi'))) {
+      progSet.add('B.E. Electronics Engineering (VLSI Design and Technology)');
     }
-    return list;
-  }, [activeTest.programmes, configuredDepts]);
+    return Array.from(progSet);
+  }, [activeTest.programmes, configuredDepts, activeTest.enrolledStudents]);
+
+  // Real-time lookup of candidate from uploaded test roster
+  const registeredCandidate = useMemo(() => {
+    const cleanReg = registerNo.trim().toUpperCase();
+    if (!cleanReg) return null;
+    return findStudentInRoster(cleanReg, activeTest);
+  }, [registerNo, activeTest]);
   const [facultyEmail, setFacultyEmail] = useState('');
   const [facultyPin, setFacultyPin] = useState('');
   const [adminIdInput, setAdminIdInput] = useState(adminId || 'admin');
@@ -289,22 +298,36 @@ export const AuthGate: React.FC<AuthGateProps> = ({
       setErrorMsg('Please enter student Register Number.');
       return;
     }
+    if (!department.trim()) {
+      setErrorMsg('Please select student Department / Program.');
+      return;
+    }
+    if (!accessKey.trim()) {
+      setErrorMsg('Please enter student Access PIN.');
+      return;
+    }
 
     const trimmedRegNo = registerNo.trim().toUpperCase();
-    const enrolledRecord = lookupEnrolledStudent(trimmedRegNo);
 
-    const isPinValid = accessKey.trim() === studentAccessPin || 
-      (enrolledRecord?.assignedPassword && accessKey.trim() === enrolledRecord.assignedPassword) ||
-      accessKey.trim() === 'cit@123';
+    // 1. STRICT CANDIDATE ROSTER VALIDATION (Register No, Name, Department, and Access PIN)
+    const rosterValidation = validateStudentLoginAgainstRoster({
+      registerNo: trimmedRegNo,
+      name: name.trim(),
+      department: department.trim(),
+      accessPin: accessKey.trim(),
+      activeTest,
+      testPin: studentAccessPin
+    });
 
-    if (!isPinValid) {
-      setErrorMsg('Invalid Access PIN. Please check your credentials.');
+    if (!rosterValidation.isValid) {
+      const failReason = rosterValidation.error || 'Student credentials failed roster validation.';
+      setErrorMsg(failReason);
       saveSecurityLogToFirestore({
         id: `sec_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         timestamp: new Date().toLocaleString(),
         eventType: 'INVALID_STUDENT_PIN_ATTEMPT',
-        severity: 'MEDIUM',
-        details: `Failed Student PIN entry attempt for Register Number / User ID: ${trimmedRegNo}.`,
+        severity: 'HIGH',
+        details: `Candidate Roster Verification Failed: ${failReason}. Register: "${trimmedRegNo}", Name: "${name.trim()}", Dept: "${department.trim()}".`,
         userRegNo: trimmedRegNo,
         userName: name.trim() || 'Unknown Student',
         userRole: 'student'
@@ -312,17 +335,16 @@ export const AuthGate: React.FC<AuthGateProps> = ({
       return;
     }
 
-    // Check if there is an active saved session authorized for this student
+    const enrolledRecord = rosterValidation.matchedStudent || lookupEnrolledStudent(trimmedRegNo);
+
+    // Check if there is an active saved session authorized for this student (Feature 3: Resume after exit)
     let isResumingAuthorizedSession = false;
     let localDeviceId: string | undefined = undefined;
     try {
-      const activeSavedRaw = localStorage.getItem('CIT_ACTIVE_ASSESSMENT_SESSION');
-      if (activeSavedRaw) {
-        const parsed = JSON.parse(activeSavedRaw);
-        if (parsed?.student?.registerNo?.trim()?.toUpperCase() === trimmedRegNo) {
-          isResumingAuthorizedSession = true;
-          localDeviceId = parsed?.student?.deviceId;
-        }
+      const activeSaved = loadActiveAssessmentSession(trimmedRegNo);
+      if (activeSaved && activeSaved.student?.registerNo?.trim()?.toUpperCase() === trimmedRegNo) {
+        isResumingAuthorizedSession = true;
+        localDeviceId = activeSaved.student?.deviceId;
       }
     } catch (e) {}
 
@@ -354,7 +376,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({
         return;
       }
 
-      if (activeSessionCheck.isActiveOnAnotherDevice) {
+      if (activeSessionCheck.isActiveOnAnotherDevice && !isResumingAuthorizedSession) {
         const promptMsg = `⚠️ CONCURRENT LOGIN BLOCKED: Register Number "${trimmedRegNo}" is currently active on another workstation or window. Concurrent logins for the same candidate are strictly forbidden.`;
         setErrorMsg(promptMsg);
         setAttemptBlockedDetails({
@@ -437,7 +459,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({
           department: existingSub?.student?.department || department,
           submittedAt: existingSub?.submittedAt || new Date().toLocaleString(),
           isSecurityLockout: true,
-          violationReason: 'Maximum 3 attempts exhausted during tab switches or interruptions'
+          violationReason: 'Maximum 3 attempts exhausted during unexpected interruptions'
         });
         setShowAttemptBlockedModal(true);
 
@@ -994,45 +1016,30 @@ export const AuthGate: React.FC<AuthGateProps> = ({
                   </div>
                 )}
 
-                {/* Name */}
+                {/* 1. Register Number */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    Student Name (Initial at the end) <span className="text-red-500">*</span>
-                  </label>
-                  <div className="relative">
-                    <User className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. VAIDEHI SUNDARAM S"
-                      value={name}
-                      onChange={(e) => setName(e.target.value.toUpperCase())}
-                      className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 text-sm focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100 font-sans uppercase placeholder-slate-400 font-medium"
-                    />
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-bold text-slate-700">
+                      Register Number / User ID <span className="text-red-500">*</span>
+                    </label>
+                    <span className="text-[10px] text-slate-500 font-medium">Checked with roster</span>
                   </div>
-                </div>
-
-                {/* Register Number */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    Register Number <span className="text-red-500">*</span>
-                  </label>
                   <div className="relative">
                     <CreditCard className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
                     <input
                       type="text"
                       required
-                      placeholder="e.g. 26CS001, 26IT001 or 71762104001"
+                      placeholder="e.g. 26CS001, 26IT001 or 717624102001"
                       value={registerNo}
                       onChange={(e) => {
                         const val = e.target.value;
                         setRegisterNo(val);
                         const upper = val.trim().toUpperCase();
-                        const enrolled = lookupEnrolledStudent(upper);
-                        if (enrolled) {
-                          if (enrolled.name) setName(enrolled.name.toUpperCase());
-                          if (enrolled.programme) setDepartment(enrolled.programme);
-                          if (enrolled.assignedPassword && !accessKey) setAccessKey(enrolled.assignedPassword);
+                        const matched = findStudentInRoster(upper, activeTest);
+                        if (matched) {
+                          if (matched.name) setName(matched.name.toUpperCase());
+                          if (matched.programme) setDepartment(matched.programme);
+                          if (matched.assignedPassword && !accessKey) setAccessKey(matched.assignedPassword);
                         } else if (DCS_SPECIFIC_STUDENTS[upper]) {
                           setDepartment('MSc Decision and Computing Sciences');
                           if (!name || name === 'STUDENT CANDIDATE') {
@@ -1045,13 +1052,63 @@ export const AuthGate: React.FC<AuthGateProps> = ({
                       className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 text-sm font-mono focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100 uppercase placeholder-slate-400 font-bold"
                     />
                   </div>
+                  {/* Real-time Roster Match Feedback */}
+                  {registeredCandidate ? (
+                    <div className="mt-1.5 p-2 bg-emerald-50 border border-emerald-300 rounded-lg text-xs text-emerald-900 flex items-center gap-1.5 shadow-2xs animate-in fade-in">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span className="truncate">Verified on candidate roster: <strong>{registeredCandidate.name}</strong> • <em>{registeredCandidate.programme}</em></span>
+                    </div>
+                  ) : registerNo.trim().length >= 3 ? (
+                    <div className="mt-1.5 p-1.5 bg-amber-50 border border-amber-300 rounded-lg text-[11px] text-amber-900 flex items-center gap-1.5 shadow-2xs animate-in fade-in">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      <span>Register Number must match an enrolled candidate in the uploaded student name list.</span>
+                    </div>
+                  ) : null}
                 </div>
 
-                {/* Department */}
+                {/* 2. Student Name */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    Department / Program <span className="text-red-500">*</span>
-                  </label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-bold text-slate-700">
+                      Student Name (Initial at the end) <span className="text-red-500">*</span>
+                    </label>
+                    {registeredCandidate && isStudentNameMatching(name, registeredCandidate.name) && (
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.2 rounded flex items-center gap-1">
+                        <Check className="w-3 h-3" /> Name Matches Roster
+                      </span>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <User className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. VAIDEHI SUNDARAM S"
+                      value={name}
+                      onChange={(e) => setName(e.target.value.toUpperCase())}
+                      className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-900 text-sm focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100 font-sans uppercase placeholder-slate-400 font-medium"
+                    />
+                  </div>
+                  {registeredCandidate && name.trim() && !isStudentNameMatching(name, registeredCandidate.name) && (
+                    <div className="mt-1 text-[11px] font-semibold text-rose-600 flex items-center gap-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>Name mismatch: Registered roster name is <strong>{registeredCandidate.name}</strong>.</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Department / Program */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-bold text-slate-700">
+                      Department / Program <span className="text-red-500">*</span>
+                    </label>
+                    {registeredCandidate && isStudentDepartmentMatching(department, registeredCandidate.programme) && (
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.2 rounded flex items-center gap-1">
+                        <Check className="w-3 h-3" /> Dept Matches Roster
+                      </span>
+                    )}
+                  </div>
                   <div className="relative">
                     <Building2 className="w-4 h-4 absolute left-3 top-3 text-slate-400 pointer-events-none" />
                     <select
@@ -1066,9 +1123,15 @@ export const AuthGate: React.FC<AuthGateProps> = ({
                       ))}
                     </select>
                   </div>
+                  {registeredCandidate && !isStudentDepartmentMatching(department, registeredCandidate.programme) && (
+                    <div className="mt-1 text-[11px] font-semibold text-rose-600 flex items-center gap-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>Dept mismatch: Candidate is registered under <strong>{registeredCandidate.programme}</strong>.</span>
+                    </div>
+                  )}
                 </div>
 
-                {/* Institutional Key / Access PIN */}
+                {/* 4. Institutional Key / Access PIN */}
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1.5 flex items-center justify-between">
                     <span>Access PIN <span className="text-red-500">*</span></span>
@@ -1192,7 +1255,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({
                         <ul className="space-y-1.5 pl-4 list-disc text-[11px] text-rose-900/90 font-medium">
                           <li><strong>Screenshots Prohibited:</strong> Screenshots, PrintScreen key, and screen snipping utilities are strictly intercepted and blocked.</li>
                           <li><strong>Copying Prohibited:</strong> Copying, cutting, text selection, and right-click context menus are completely disabled.</li>
-                          <li><strong>Tab & Window Tracking:</strong> Navigating away from the assessment window is monitored. Students are allowed up to 3 attempts during tab switch overs or unexpected terminations, resuming from their last savepoint.</li>
+                          <li><strong>Session Resilience:</strong> If an unexpected disconnection, browser closure, or crash occurs, students can log back in and resume seamlessly from their exact question and savepoint.</li>
                           <li><strong>Continuous Auto-Save:</strong> Answers are continuously saved in real time, enabling seamless offline resilience.</li>
                         </ul>
                       </div>
@@ -1815,7 +1878,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({
               <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-xs text-amber-900 leading-relaxed">
                 <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
                 <span>
-                  Coimbatore Institute of Technology enforces strict anti-cheating regulations. Tab switching and screenshot capture are prohibited. This incident has been logged into the audit trail.
+                  Coimbatore Institute of Technology enforces strict anti-cheating regulations. Screenshot capture and unauthorized copying are prohibited. This incident has been logged into the audit trail.
                 </span>
               </div>
 

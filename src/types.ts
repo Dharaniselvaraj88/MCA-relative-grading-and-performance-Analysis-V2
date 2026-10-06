@@ -251,6 +251,10 @@ export interface ActiveAssessmentSession {
   currentSection: SectionId;
   currentQuestionIndex: number;
   savedAt: number;
+  startedAt?: number;
+  totalDurationSeconds?: number;
+  testConfigId?: string;
+  testCode?: string;
   attemptCount?: number; // 1, 2, or 3 (Current attempt number out of max 3 allowed)
   maxAttempts?: number;  // Maximum permitted attempts (defaults to 3)
   tabSwitchCount?: number; // Count of tab switch violations detected
@@ -261,7 +265,7 @@ export interface ActiveAssessmentSession {
     details?: string;
   }[];
   lastTerminationReason?: string;
-  status?: 'active' | 'interrupted' | 'completed' | 'terminated';
+  status?: 'active' | 'in-progress' | 'interrupted' | 'completed' | 'terminated';
 }
 
 export interface TestDomainConfig {
