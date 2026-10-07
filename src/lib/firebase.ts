@@ -346,9 +346,9 @@ export function subscribeSubmissions(callback: (subs: SavedSubmission[]) => void
           // secondary collection might not exist, ignore
         }
 
-        // Merge any local submissions that haven't synced yet
+        // Merge pending offline submissions that have not synced to Firestore yet
         try {
-          const raw = localStorage.getItem('CIT_COGNITIVE_SUBMISSIONS');
+          const raw = localStorage.getItem('CIT_PENDING_OFFLINE_SUBMISSIONS');
           if (raw) {
             const localList: SavedSubmission[] = JSON.parse(raw);
             if (Array.isArray(localList)) {
@@ -369,7 +369,7 @@ export function subscribeSubmissions(callback: (subs: SavedSubmission[]) => void
           return timeB.localeCompare(timeA);
         });
 
-        // Cache latest merged list
+        // Cache latest authoritative list to local storage
         try {
           localStorage.setItem('CIT_COGNITIVE_SUBMISSIONS', JSON.stringify(subs));
         } catch (_) {}
@@ -452,25 +452,22 @@ export async function getAllSubmissionsFromFirestore(): Promise<SavedSubmission[
     // optional secondary collection
   }
 
-  // Always merge local storage submissions so offline/quota data is preserved
+  // Only merge pending offline submissions that have not synced to Firestore yet
   try {
-    const localKeys = ['CIT_COGNITIVE_SUBMISSIONS', 'CIT_PENDING_OFFLINE_SUBMISSIONS', 'CIT_OFFLINE_SUBMISSIONS', 'CIT_ASSESSMENT_SUBMISSIONS', 'CIT_MATH_ASSESSMENT_SUBMISSIONS'];
-    localKeys.forEach((key) => {
-      const item = localStorage.getItem(key);
-      if (item) {
-        const parsed = JSON.parse(item);
-        if (Array.isArray(parsed)) {
-          parsed.forEach((s) => {
-            if (s && (s.id || s.student?.registerNo)) {
-              const sid = s.id || `SUB-LOCAL-${s.student?.registerNo}`;
-              if (!subsMap.has(sid)) {
-                subsMap.set(sid, { ...s, id: sid });
-              }
+    const raw = localStorage.getItem('CIT_PENDING_OFFLINE_SUBMISSIONS');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((s) => {
+          if (s && (s.id || s.student?.registerNo)) {
+            const sid = s.id || `SUB-LOCAL-${s.student?.registerNo}`;
+            if (!subsMap.has(sid)) {
+              subsMap.set(sid, { ...s, id: sid });
             }
-          });
-        }
+          }
+        });
       }
-    });
+    }
   } catch (localErr) {
     console.warn('Local storage fallback error in getAllSubmissions:', localErr);
   }
@@ -824,6 +821,10 @@ export async function clearAllSubmissionsFromFirestore(): Promise<{ deletedCount
     }
 
     console.log(`Successfully cleared ${deletedCount} student submissions from Firestore.`);
+    try {
+      const keys = ['CIT_COGNITIVE_SUBMISSIONS', 'CIT_SAVED_SUBMISSIONS', 'CIT_ASSESSMENT_SUBMISSIONS', 'CIT_OFFLINE_SUBMISSIONS', 'CIT_PENDING_OFFLINE_SUBMISSIONS', 'CIT_MATH_ASSESSMENT_SUBMISSIONS'];
+      keys.forEach((k) => localStorage.removeItem(k));
+    } catch {}
     return { deletedCount };
   } catch (err) {
     console.warn('Failed to clear all submissions from Firestore:', err);
@@ -1230,13 +1231,9 @@ export function subscribeAssessmentTests(callback: (tests: AssessmentTestConfig[
           } catch {}
           callback(tests);
         } else {
-          // Fallback to local storage
           try {
-            const cached = localStorage.getItem('CIT_ASSESSMENT_TESTS');
-            if (cached) {
-              callback(JSON.parse(cached));
-              return;
-            }
+            localStorage.removeItem('CIT_ASSESSMENT_TESTS');
+            localStorage.removeItem('CIT_ACTIVE_TEST_CONFIG');
           } catch {}
           callback([]);
         }

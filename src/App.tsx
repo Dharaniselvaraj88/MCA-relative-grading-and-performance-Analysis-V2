@@ -232,46 +232,39 @@ export default function App() {
 
   // Mirror savedSubmissions to local storage whenever updated so local recovery is always 100% up-to-date
   useEffect(() => {
-    if (savedSubmissions && savedSubmissions.length > 0) {
-      try {
+    try {
+      if (savedSubmissions && savedSubmissions.length > 0) {
         localStorage.setItem('CIT_COGNITIVE_SUBMISSIONS', JSON.stringify(savedSubmissions));
-      } catch (err) {
-        console.warn('Failed to mirror savedSubmissions to localStorage:', err);
+      } else {
+        localStorage.removeItem('CIT_COGNITIVE_SUBMISSIONS');
       }
+    } catch (err) {
+      console.warn('Failed to mirror savedSubmissions to localStorage:', err);
     }
   }, [savedSubmissions]);
 
-  // Migration Effect: Attempt to upload local submissions to Cloud Storage and synchronize department mappings
+  // One-time purge of stale local submissions, tests, and active sessions so client begins completely clean
   useEffect(() => {
-    // Immediate sync of DCS Register Numbers (26DCS014, 26DCS016, 26DCS024, 26DCS025, 26DCS038, 26DCS047) to "MSc Decision and Computing Sciences"
-    syncDcsDepartmentRenamesToFirestore().catch((err) => console.warn('Initial DCS department sync:', err));
-
     try {
-      const legacyKeys = ['CIT_COGNITIVE_SUBMISSIONS', 'CIT_ASSESSMENT_SUBMISSIONS', 'CIT_OFFLINE_SUBMISSIONS', 'CIT_PENDING_OFFLINE_SUBMISSIONS'];
-      const localSubsToMigrate: SavedSubmission[] = [];
-      for (const key of legacyKeys) {
-        const item = localStorage.getItem(key);
-        if (item) {
-          try {
-            const parsed = JSON.parse(item);
-            if (Array.isArray(parsed)) {
-              localSubsToMigrate.push(...parsed);
-            }
-          } catch (e) {}
-        }
+      if (localStorage.getItem('CIT_DATA_PURGED_V2') !== 'true') {
+        const staleKeys = [
+          'CIT_COGNITIVE_SUBMISSIONS',
+          'CIT_ASSESSMENT_SUBMISSIONS',
+          'CIT_OFFLINE_SUBMISSIONS',
+          'CIT_PENDING_OFFLINE_SUBMISSIONS',
+          'CIT_SAVED_SUBMISSIONS',
+          'CIT_MATH_ASSESSMENT_SUBMISSIONS',
+          'CIT_ACTIVE_ASSESSMENT_SESSION',
+          'CIT_STUDENT_LOGINS',
+          'CIT_ASSESSMENT_TESTS',
+          'CIT_ACTIVE_TEST_CONFIG',
+          'CIT_ENROLLED_STUDENTS'
+        ];
+        staleKeys.forEach((k) => localStorage.removeItem(k));
+        localStorage.setItem('CIT_DATA_PURGED_V2', 'true');
+        setSavedSubmissions([]);
       }
-      if (localSubsToMigrate.length > 0) {
-        const uniqueMap = new Map<string, SavedSubmission>();
-        localSubsToMigrate.forEach((s) => {
-          if (s && s.id) uniqueMap.set(s.id, s);
-        });
-        uniqueMap.forEach((sub) => {
-          saveSubmissionToFirestore(sub).catch(() => {});
-        });
-      }
-    } catch (e) {
-      console.error('Error synchronizing local submissions with Cloud Storage:', e);
-    }
+    } catch (_) {}
   }, []);
 
   // Global Portal Access & Lock States Controlled by Admin
