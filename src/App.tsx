@@ -118,7 +118,7 @@ export default function App() {
         }
       }
     } catch (e) {
-      console.error('Failed to parse saved session from localStorage:', e);
+      console.warn('Failed to parse saved session from localStorage:', e);
     }
     return null;
   })();
@@ -163,7 +163,7 @@ export default function App() {
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
     } catch (e) {
-      console.error('Failed to parse custom question bank:', e);
+      console.warn('Failed to parse custom question bank:', e);
     }
     return ALL_QUESTIONS;
   });
@@ -439,7 +439,7 @@ export default function App() {
       const saved = localStorage.getItem('CIT_STUDENT_PIN_SCHEDULE');
       if (saved) return JSON.parse(saved);
     } catch (e) {
-      console.error('Failed to parse student PIN schedule:', e);
+      console.warn('Failed to parse student PIN schedule:', e);
     }
     return {
       isEnabled: false,
@@ -454,7 +454,7 @@ export default function App() {
       const saved = localStorage.getItem('CIT_EXTRA_TIMER_MINUTES');
       if (saved !== null) return parseInt(saved, 10) || 0;
     } catch (e) {
-      console.error(e);
+      console.warn('Failed to parse extra timer minutes:', e);
     }
     return 0;
   });
@@ -464,7 +464,7 @@ export default function App() {
       const saved = localStorage.getItem('CIT_EXTRA_TIMER_WARNING_MSG');
       if (saved !== null) return saved;
     } catch (e) {
-      console.error(e);
+      console.warn('Failed to parse extra timer warning message:', e);
     }
     return '⚠️ Notice: Extra time has been granted by the Admin for this assessment session. Please manage your time effectively.';
   });
@@ -474,7 +474,7 @@ export default function App() {
       const saved = localStorage.getItem('CIT_AUTHORIZED_FACULTY');
       if (saved) return JSON.parse(saved);
     } catch (e) {
-      console.error('Failed to parse authorized faculty:', e);
+      console.warn('Failed to parse authorized faculty:', e);
     }
     return [
       {
@@ -1095,7 +1095,7 @@ export default function App() {
 
       return true;
     } catch (err) {
-      console.error('Failed to update submission student details:', err);
+      console.warn('Failed to update submission student details:', err);
       return false;
     }
   };
@@ -1106,7 +1106,7 @@ export default function App() {
     try {
       await deleteSubmissionFromFirestore(submissionId);
     } catch (e) {
-      console.error('Failed to delete submission from Firestore:', e);
+      console.warn('Failed to delete submission from Firestore:', e);
     }
   };
 
@@ -1117,7 +1117,7 @@ export default function App() {
     try {
       await deleteMultipleSubmissionsFromFirestore(submissionIds);
     } catch (e) {
-      console.error('Failed to delete submissions from Firestore:', e);
+      console.warn('Failed to delete submissions from Firestore:', e);
     }
   };
 
@@ -1140,7 +1140,7 @@ export default function App() {
       setSyncBannerMessage(`🗑️ Database Cleared: Successfully cleared ${result.deletedCount} student submissions from Firestore database.`);
       setTimeout(() => setSyncBannerMessage(null), 6000);
     } catch (e) {
-      console.error('Failed to delete all submissions from Firestore:', e);
+      console.warn('Failed to delete all submissions from Firestore:', e);
     }
   };
 
@@ -1165,7 +1165,7 @@ export default function App() {
           activeSaved = parsed;
         }
       } catch (e) {
-        console.error('Error parsing saved active session:', e);
+        console.warn('Error parsing saved active session:', e);
       }
     }
 
@@ -1338,7 +1338,14 @@ export default function App() {
   const handleFinalSubmission = async () => {
     const currentSession = currentSessionRef.current;
     const currentStudent = student || currentSession?.student;
-    if (!currentStudent) return;
+    if (!currentStudent) {
+      console.warn('Submission attempted with no active student found.');
+      return;
+    }
+
+    if (!student && currentStudent) {
+      setStudent(currentStudent);
+    }
 
     const activeResponses = currentSession?.responses || responses;
     const activeQuestions = currentSession?.currentTestQuestions || currentTestQuestions;
@@ -1375,32 +1382,41 @@ export default function App() {
       const list: SavedSubmission[] = raw ? JSON.parse(raw) : [];
       const updated = [newSavedSub, ...list.filter((s) => s.id !== newSavedSub.id)];
       localStorage.setItem('CIT_COGNITIVE_SUBMISSIONS', JSON.stringify(updated));
+      localStorage.setItem(`CIT_COGNITIVE_REPORT_${currentStudent.registerNo}`, JSON.stringify(generatedReport));
     } catch (_) {}
 
     // 2. Update React application state
     setSavedSubmissions((prev) => [newSavedSub, ...prev]);
 
-    // 3. Attempt cloud persistence; smoothly fallback if Quota Exceeded or Offline
+    // Exit fullscreen if active on desktop/system
+    if (typeof document !== 'undefined' && document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+
+    // 3. Immediately transition view to feedback form with ZERO delay!
+    // Do NOT block on cloud network calls or Firestore promises
+    setViewState('submission');
+
+    // 4. Background cloud persistence (non-blocking)
     if (isOnline()) {
-      try {
-        await saveSubmissionToFirestore(newSavedSub);
-        setSyncBannerMessage('✅ Assessment Submitted Successfully & Synchronized with Cloud Database.');
-        setTimeout(() => setSyncBannerMessage(null), 5000);
-      } catch (err) {
-        console.warn('Firestore write failed (Quota Exceeded or Offline). Queuing locally:', err);
-        queueOfflineSubmission(newSavedSub);
-        setPendingSyncCount(getPendingOfflineSubmissions().length);
-        setSyncBannerMessage('📡 Assessment Saved Successfully in Local Browser Storage (Cloud Quota Reached). Your score and answers are 100% safe!');
-        setTimeout(() => setSyncBannerMessage(null), 8000);
-      }
+      saveSubmissionToFirestore(newSavedSub)
+        .then(() => {
+          setSyncBannerMessage('✅ Assessment Submitted Successfully & Synchronized with Cloud Database.');
+          setTimeout(() => setSyncBannerMessage(null), 5000);
+        })
+        .catch((err) => {
+          console.warn('Firestore write failed (Quota Exceeded or Offline). Queuing locally:', err);
+          queueOfflineSubmission(newSavedSub);
+          setPendingSyncCount(getPendingOfflineSubmissions().length);
+          setSyncBannerMessage('📡 Assessment Saved Successfully in Local Browser Storage (Cloud Quota Reached). Your score and answers are 100% safe!');
+          setTimeout(() => setSyncBannerMessage(null), 8000);
+        });
     } else {
       queueOfflineSubmission(newSavedSub);
       setPendingSyncCount(getPendingOfflineSubmissions().length);
       setSyncBannerMessage('📡 Assessment Saved Locally (Offline Mode). Answers and score report are securely stored on this device.');
       setTimeout(() => setSyncBannerMessage(null), 8000);
     }
-
-    setViewState('submission');
   };
 
   // Security lockout state message for AuthGate home page
@@ -2131,10 +2147,10 @@ export default function App() {
             />
           )}
 
-          {viewState === 'submission' && student && report && (
+          {viewState === 'submission' && (
             <StudentSubmissionView
-              student={student}
-              report={report}
+              student={student || currentSessionRef.current?.student || { name: 'Student Candidate', registerNo: 'REG-PENDING', department: 'ENGINEERING', deviceId: 'browser' }}
+              report={report || (student?.registerNo ? JSON.parse(localStorage.getItem(`CIT_COGNITIVE_REPORT_${student.registerNo}`) || 'null') : null) || calculateCognitiveProfile(student || { name: 'Student Candidate', registerNo: 'REG-PENDING', department: 'ENGINEERING', deviceId: 'browser' }, responses, 0, currentTestQuestions)}
               onFacultyUnlock={() => setViewState('report')}
               onRetakeOrExit={handleGoHome}
             />

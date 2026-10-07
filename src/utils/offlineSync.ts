@@ -36,7 +36,7 @@ export function saveActiveAssessmentSession(session: ActiveAssessmentSession): v
       localStorage.setItem(`${SAVED_SESSION_KEY}_${cleanReg}`, jsonStr);
     }
   } catch (error) {
-    console.error('Failed to save active assessment session to localStorage:', error);
+    console.warn('Failed to save active assessment session to localStorage:', error);
   }
 }
 
@@ -89,7 +89,7 @@ export function loadActiveAssessmentSession(registerNo?: string): ActiveAssessme
 
     return parsed;
   } catch (error) {
-    console.error('Failed to load active assessment session from localStorage:', error);
+    console.warn('Failed to load active assessment session from localStorage:', error);
     return null;
   }
 }
@@ -105,7 +105,7 @@ export function clearActiveAssessmentSession(registerNo?: string): void {
       localStorage.removeItem(`${SAVED_SESSION_KEY}_${cleanReg}`);
     }
   } catch (error) {
-    console.error('Failed to clear active assessment session:', error);
+    console.warn('Failed to clear active assessment session:', error);
   }
 }
 
@@ -131,7 +131,7 @@ export function getPendingOfflineSubmissions(): SavedSubmission[] {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
-    console.error('Failed to read pending offline submissions:', error);
+    console.warn('Failed to read pending offline submissions:', error);
     return [];
   }
 }
@@ -148,7 +148,7 @@ export function queueOfflineSubmission(submission: SavedSubmission): void {
     localStorage.setItem(PENDING_SUBMISSIONS_KEY, JSON.stringify(updated));
     console.log(`Submission ${submission.id} queued for offline sync.`);
   } catch (error) {
-    console.error('Failed to queue offline submission:', error);
+    console.warn('Failed to queue offline submission:', error);
   }
 }
 
@@ -161,7 +161,7 @@ export function removePendingOfflineSubmission(submissionId: string): void {
     const updated = existing.filter((s) => s.id !== submissionId);
     localStorage.setItem(PENDING_SUBMISSIONS_KEY, JSON.stringify(updated));
   } catch (error) {
-    console.error('Failed to remove pending submission from queue:', error);
+    console.warn('Failed to remove pending submission from queue:', error);
   }
 }
 
@@ -172,7 +172,7 @@ export function clearPendingOfflineSubmissions(): void {
   try {
     localStorage.removeItem(PENDING_SUBMISSIONS_KEY);
   } catch (error) {
-    console.error('Failed to clear pending offline submissions:', error);
+    console.warn('Failed to clear pending offline submissions:', error);
   }
 }
 
@@ -200,7 +200,7 @@ export async function syncPendingSubmissions(): Promise<{ syncedCount: number; t
       syncedCount++;
       console.log(`Successfully synced offline submission ${submission.id} to Firestore.`);
     } catch (error) {
-      console.error(`Failed to sync submission ${submission.id}:`, error);
+      console.warn(`Failed to sync submission ${submission.id}:`, error);
     }
   }
 
@@ -317,7 +317,7 @@ export function exportSubmissionsToJson(submissions: SavedSubmission[]): void {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   } catch (err) {
-    console.error('Failed to export submissions to JSON:', err);
+    console.warn('Failed to export submissions to JSON:', err);
   }
 }
 
@@ -354,7 +354,7 @@ export function importSubmissionsFromJson(jsonString: string): { importedCount: 
     localStorage.setItem('CIT_COGNITIVE_SUBMISSIONS', JSON.stringify(mergedList));
     return { importedCount: count, submissions: mergedList };
   } catch (err) {
-    console.error('Failed to import submissions from JSON:', err);
+    console.warn('Failed to import submissions from JSON:', err);
     throw err;
   }
 }

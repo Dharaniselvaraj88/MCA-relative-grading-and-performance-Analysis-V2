@@ -20,9 +20,9 @@ if ('serviceWorker' in navigator) {
     // In development mode, unregister any existing service workers so Vite dev server loads instantly
     navigator.serviceWorker.getRegistrations().then((registrations) => {
       for (const registration of registrations) {
-        registration.unregister();
+        registration.unregister().catch(() => {});
       }
-    });
+    }).catch(() => {});
   }
 }
 

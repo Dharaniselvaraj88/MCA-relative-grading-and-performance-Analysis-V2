@@ -45,17 +45,14 @@ try {
 export const db = firestoreInstance;
 export const auth = getAuth(app);
 
-// Test Firestore Connection (Non-blocking async call)
+// Test Firestore Connection (Non-blocking async call, safe fallback)
 export async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && (error.message.includes('the client is offline') || error.message.includes('unavailable'))) {
-      console.info('Firestore operating with offline cache and auto-sync.');
-    }
+  } catch {
+    // Graceful silent fallback for offline / serverless operation
   }
 }
-testConnection();
 
 export enum OperationType {
   CREATE = 'create',
@@ -585,7 +582,7 @@ export async function updateSubmissionStudentDetailsInFirestore(
 
     return { success: true };
   } catch (err: any) {
-    console.error('Failed to update submission student details in Firestore:', err);
+    console.warn('Failed to update submission student details in Firestore:', err);
     return { success: false, error: err?.message || 'Update failed' };
   }
 }

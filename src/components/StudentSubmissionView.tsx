@@ -54,7 +54,7 @@ export const StudentSubmissionView: React.FC<StudentSubmissionViewProps> = ({
         setIsFeedbackSubmitted(true);
       }
     } catch (e) {
-      console.error(e);
+      console.warn('Feedback status check note:', e);
     }
   }, [student.registerNo]);
 
@@ -98,7 +98,7 @@ export const StudentSubmissionView: React.FC<StudentSubmissionViewProps> = ({
       localStorage.setItem('CIT_APP_FEEDBACK', JSON.stringify(savedList));
       localStorage.setItem(`CIT_FEEDBACK_SUBMITTED_${student.registerNo}`, 'true');
     } catch (e) {
-      console.error('Failed to save feedback to local storage:', e);
+      console.warn('Failed to save feedback to local storage:', e);
     }
 
     setIsSubmittingFeedback(false);

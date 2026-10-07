@@ -1822,11 +1822,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     return 'CIT-MATH-2026-01';
   };
 
-  // Check if submission matches target test code / identifier
+  // Check if submission matches target test code / identifier (supports 'ALL' for all tests)
   const matchesTestCodeFilter = (sub: SavedSubmission, targetCode: string) => {
     if (!targetCode) return false;
-    const subCode = getSubmissionTestCode(sub).toUpperCase().trim();
     const target = targetCode.toUpperCase().trim();
+    if (target === 'ALL' || target === 'ALL TESTS' || target === 'ALL_TESTS') return true;
+    const subCode = getSubmissionTestCode(sub).toUpperCase().trim();
     return subCode === target;
   };
 
@@ -1856,19 +1857,32 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     return false;
   };
 
-  // Memoized available test codes across assessment test configs and submissions
+  // Memoized available test codes: tests occurring on selectedDate (if date chosen), plus configured assessment tests
   const availableTestCodes = useMemo(() => {
     const set = new Set<string>();
+    // If a specific date is selected, find tests that actually occurred on that date
+    if (selectedDate) {
+      submissions.forEach((s) => {
+        if (matchesDateFilter(s, selectedDate)) {
+          const c = getSubmissionTestCode(s);
+          if (c && c.toUpperCase() !== 'ALL') set.add(c);
+        }
+      });
+    }
+    // Also include configured assessment tests
     assessmentTests.forEach((t) => {
-      if (t.testCode && t.testCode.trim()) set.add(t.testCode.trim());
+      if (t.testCode && t.testCode.trim() && t.testCode.trim().toUpperCase() !== 'ALL') set.add(t.testCode.trim());
     });
-    submissions.forEach((s) => {
-      const c = getSubmissionTestCode(s);
-      if (c) set.add(c);
-    });
+    // Fallback across all submissions if empty
+    if (set.size === 0) {
+      submissions.forEach((s) => {
+        const c = getSubmissionTestCode(s);
+        if (c && c.toUpperCase() !== 'ALL') set.add(c);
+      });
+    }
     try {
       const active = getActiveAssessmentTest();
-      if (active?.testCode) set.add(active.testCode.trim());
+      if (active?.testCode && active.testCode.trim().toUpperCase() !== 'ALL') set.add(active.testCode.trim());
     } catch {
       // ignore
     }
@@ -1876,7 +1890,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       set.add('CIT-MATH-2026-01');
     }
     return Array.from(set).sort();
-  }, [assessmentTests, submissions]);
+  }, [assessmentTests, submissions, selectedDate]);
 
   // Memoized recorded assessment dates from actual student submissions
   const availableDates = useMemo(() => {
@@ -4289,7 +4303,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <KeyRound className="w-4 h-4 text-purple-600 shrink-0" />
                 <span className="text-xs text-slate-600 font-medium hidden sm:inline">Test Code / ID:</span>
                 <select
-                  value={availableTestCodes.includes(selectedTestCode) ? selectedTestCode : (selectedTestCode ? '__CUSTOM__' : '')}
+                  value={selectedTestCode === 'ALL' ? 'ALL' : (availableTestCodes.includes(selectedTestCode) ? selectedTestCode : (selectedTestCode ? '__CUSTOM__' : ''))}
                   onChange={(e) => {
                     if (e.target.value === '__CUSTOM__') {
                       setSelectedTestCode('');
@@ -4299,9 +4313,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       setIsCustomTestCodeInput(false);
                     }
                   }}
-                  className="bg-transparent text-xs text-slate-900 font-mono font-bold focus:outline-none cursor-pointer max-w-[190px] truncate"
+                  className="bg-transparent text-xs text-slate-900 font-mono font-bold focus:outline-none cursor-pointer max-w-[210px] truncate"
                 >
-                  <option value="">-- Select Test Code --</option>
+                  <option value="">-- Select Test Code / ID --</option>
+                  <option value="ALL">All Tests</option>
                   {availableTestCodes.map((code) => (
                     <option key={code} value={code}>{code}</option>
                   ))}
@@ -4356,9 +4371,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   ))}
                 </div>
               )}
-              {!selectedTestCode && availableTestCodes.length > 0 && (
+              {!selectedTestCode && (
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-[11px] text-slate-500 font-medium">Available Test Codes:</span>
+                  <span className="text-[11px] text-slate-500 font-medium">Test Options:</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTestCode('ALL')}
+                    className="px-2 py-0.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-[11px] font-mono font-bold transition-all cursor-pointer shadow-2xs"
+                    title="Load all tests that occurred on the selected assessment date"
+                  >
+                    ★ All Tests
+                  </button>
                   {availableTestCodes.slice(0, 3).map((tc) => (
                     <button
                       key={tc}
@@ -4383,7 +4406,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 {isDateAndTestSelected ? (
                   <>
                     <strong className="text-emerald-700 font-semibold">{dateLabel}</strong> • Test Code:{' '}
-                    <strong className="text-purple-700 font-mono font-bold">{selectedTestCode}</strong> —{' '}
+                    <strong className="text-purple-700 font-mono font-bold">
+                      {selectedTestCode === 'ALL' ? 'All Tests (Consolidated)' : selectedTestCode}
+                    </strong> —{' '}
                     <strong className="text-slate-900 font-mono">{submissionsForSelectedDate.length}</strong> student(s) evaluated
                   </>
                 ) : (
@@ -4434,7 +4459,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               {/* FULL TEST REPORT BUTTON REQUESTED BY USER */}
               <button
                 disabled={!isDateAndTestSelected || submissionsForSelectedDate.length === 0}
-                onClick={() => downloadFullTestReportExcel(submissionsForSelectedDate, dateLabel, selectedTestCode)}
+                onClick={() => downloadFullTestReportExcel(submissionsForSelectedDate, dateLabel, selectedTestCode === 'ALL' ? 'All Tests' : selectedTestCode)}
                 className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white font-extrabold text-xs rounded transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
                 title="Download comprehensive Excel report containing Register Number, Name, Department, Email, Domain Grades & Percentiles for all students who took this test on this date"
               >
@@ -4574,7 +4599,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <AlertCircle className="w-10 h-10 text-amber-600 mx-auto" />
               <h3 className="text-base font-bold text-amber-950 font-sans">No Assessment Records Found</h3>
               <p className="text-xs text-amber-800 max-w-lg mx-auto leading-relaxed">
-                No students were evaluated for test code <strong className="font-mono text-purple-900 bg-purple-100 px-1.5 py-0.5 rounded border border-purple-200">{selectedTestCode}</strong> on <strong className="text-slate-900 bg-white px-1.5 py-0.5 rounded border border-amber-300">{dateLabel}</strong>.
+                No students were evaluated for {selectedTestCode === 'ALL' ? <strong className="font-semibold text-purple-900 bg-purple-100 px-1.5 py-0.5 rounded border border-purple-200">all tests</strong> : <>test code <strong className="font-mono text-purple-900 bg-purple-100 px-1.5 py-0.5 rounded border border-purple-200">{selectedTestCode}</strong></>} on <strong className="text-slate-900 bg-white px-1.5 py-0.5 rounded border border-amber-300">{dateLabel}</strong>.
               </p>
               <div className="pt-2">
                 <button
@@ -5094,7 +5119,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             selectedTestCode ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-amber-50 text-amber-800 border-amber-300'
           }`}>
             <KeyRound className="w-4 h-4 text-purple-600" />
-            <span>Test Code / ID: <strong>{selectedTestCode || 'Not Selected'}</strong></span>
+            <span>Test Code / ID: <strong>{selectedTestCode === 'ALL' ? 'All Tests (Consolidated)' : (selectedTestCode || 'Not Selected')}</strong></span>
             <span className="text-[11px] font-bold">{selectedTestCode ? '✓ Ready' : '⚠️ Required'}</span>
           </div>
         </div>
@@ -7448,7 +7473,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <div className="flex items-center gap-2">
               <h2 className="text-base font-bold font-sans text-slate-900">Evaluated Student Submissions</h2>
               <span className="text-xs text-blue-700 font-semibold bg-blue-50 px-2.5 py-1 rounded border border-blue-200">
-                {dateLabel} • Test Code: {selectedTestCode} ({submissionsForSelectedDate.length} Evaluated)
+                {dateLabel} • Test Code: {selectedTestCode === 'ALL' ? 'All Tests' : selectedTestCode} ({submissionsForSelectedDate.length} Evaluated)
               </span>
             </div>
 
@@ -7868,7 +7893,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <div className="bg-slate-900 p-5 border-b border-slate-800 flex items-center justify-between gap-4">
               <div>
                 <p className="text-sm text-blue-300 font-bold uppercase tracking-tight">
-                  Datewise Assessment Report • {dateLabel} {selectedTestCode ? `• Test Code: ${selectedTestCode}` : ''}
+                  Datewise Assessment Report • {dateLabel} {selectedTestCode ? (selectedTestCode === 'ALL' ? '• All Tests' : `• Test Code: ${selectedTestCode}`) : ''}
                 </p>
               </div>
 
@@ -7909,7 +7934,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <span>Download CSV</span>
                 </button>
                 <button
-                  onClick={() => downloadFullTestReportExcel(submissionsForSelectedDate, dateLabel, selectedTestCode)}
+                  onClick={() => downloadFullTestReportExcel(submissionsForSelectedDate, dateLabel, selectedTestCode === 'ALL' ? 'All Tests' : selectedTestCode)}
                   className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white font-bold rounded flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
                   title="Download Full Test Report Excel with Domain Grades & Percentiles"
                 >

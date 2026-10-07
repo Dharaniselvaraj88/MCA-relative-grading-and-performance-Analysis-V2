@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { SectionId, StudentInfo } from '../types';
 import {
   CheckCircle2,
@@ -12,7 +12,8 @@ import {
   Bookmark,
   ArrowRight,
   ShieldCheck,
-  RotateCcw
+  RotateCcw,
+  RefreshCw
 } from 'lucide-react';
 
 export interface SectionCompletionSummary {
@@ -25,7 +26,7 @@ export interface SectionCompletionSummary {
 interface ConfirmSubmissionModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirmSubmit: () => void;
+  onConfirmSubmit: () => void | Promise<void>;
   student?: StudentInfo | null;
   testTitle?: string;
   testCode?: string;
@@ -53,6 +54,8 @@ export const ConfirmSubmissionModal: React.FC<ConfirmSubmissionModalProps> = ({
   sections,
   onJumpToSection
 }) => {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   if (!isOpen) return null;
 
   const isAllAnswered = unansweredCount === 0;
@@ -335,14 +338,29 @@ export const ConfirmSubmissionModal: React.FC<ConfirmSubmissionModalProps> = ({
           <button
             id="btn-confirm-final-submission"
             type="button"
-            onClick={() => {
-              onClose();
-              onConfirmSubmit();
+            disabled={isSubmitting}
+            onClick={async () => {
+              setIsSubmitting(true);
+              try {
+                await onConfirmSubmit();
+              } finally {
+                setIsSubmitting(false);
+                onClose();
+              }
             }}
-            className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center gap-2 shadow-md shadow-emerald-600/30 transition-all cursor-pointer hover:scale-[1.01] active:scale-[0.99]"
+            className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-xl font-bold text-xs flex items-center gap-2 shadow-md shadow-emerald-600/30 transition-all cursor-pointer hover:scale-[1.01] active:scale-[0.99]"
           >
-            <CheckCircle2 className="w-4 h-4" />
-            <span>Confirm &amp; Submit Assessment</span>
+            {isSubmitting ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                <span>Submitting Assessment...</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Confirm &amp; Submit Assessment</span>
+              </>
+            )}
           </button>
         </div>
       </div>
