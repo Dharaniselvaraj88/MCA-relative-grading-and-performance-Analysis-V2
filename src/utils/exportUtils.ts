@@ -1,7 +1,8 @@
-import { CognitiveProfileReport, SavedSubmission, Question, AppExperienceFeedback } from '../types';
+import { CognitiveProfileReport, SavedSubmission, Question, AppExperienceFeedback, SectionId } from '../types';
 import { ALL_QUESTIONS, SECTION_METADATA } from '../data/questionsData';
 import { formatDateDisplay } from './dateUtils';
 import { normalizeReport, normalizeSubmissionsList, normalizeSubmissionRecord } from './studentDataNormalizer';
+import { lookupEnrolledStudent } from '../lib/firebase';
 
 export async function buildIndividualStudentPdfDoc(rawReport: CognitiveProfileReport) {
   const report = normalizeReport(rawReport) || rawReport;
@@ -545,6 +546,213 @@ export async function downloadSingleDateExcelReport(rawSubmissions: SavedSubmiss
 
   const cleanDateLabel = dateLabel.replace(/[^a-zA-Z0-9]/g, '_');
   XLSX.writeFile(wb, `CIT_Single_Date_Assessment_Report_${cleanDateLabel}.xlsx`);
+}
+
+/**
+ * Generates an all-inclusive Excel workbook ("Full Test Report") for all students who took a specific test on a specific date.
+ * Columns: S.No, Student Register Number, Name, Department, Email ID, Test Code, Date,
+ * Overall Score, Percentage, Overall Grade, Overall Percentile, and
+ * Grades and Percentiles across all five domains:
+ * 1. Limits & Continuity (Calculus)
+ * 2. Differentiation (Probability)
+ * 3. Integration (Number System)
+ * 4. Probability & Statistics (Trigonometry)
+ * 5. Matrices & Determinants (Statistics)
+ */
+export async function downloadFullTestReportExcel(
+  rawSubmissions: SavedSubmission[],
+  dateLabel: string,
+  testCode: string
+) {
+  const submissions = normalizeSubmissionsList(rawSubmissions);
+  const XLSX = await import('xlsx');
+  const wb = XLSX.utils.book_new();
+
+  const totalStudents = submissions.length;
+  if (totalStudents === 0) {
+    alert('No student submissions found for the selected assessment date and test code.');
+    return;
+  }
+
+  // Domain keys matching SECTION_METADATA & sectionScores
+  const domains = [
+    { key: 'calculus', title: 'Limits & Continuity' },
+    { key: 'probability', title: 'Differentiation' },
+    { key: 'numberSystem', title: 'Integration' },
+    { key: 'trigonometry', title: 'Probability & Statistics' },
+    { key: 'statistics', title: 'Matrices & Determinants' },
+  ];
+
+  // Extract score arrays for cohort percentile calculation
+  const overallScores = submissions.map((s) => s.report?.overallScore || 0);
+  const domainScoreArrays: Record<string, number[]> = {};
+  domains.forEach((d) => {
+    domainScoreArrays[d.key] = submissions.map((s) => {
+      const sec = s.report?.sectionScores?.[d.key as SectionId];
+      return sec?.score ?? 0;
+    });
+  });
+
+  const calculatePercentile = (score: number, arr: number[]): number => {
+    if (!arr || arr.length <= 1) return 100.0;
+    const lowerCount = arr.filter((x) => x < score).length;
+    const equalCount = arr.filter((x) => x === score).length;
+    const rank = ((lowerCount + 0.5 * equalCount) / arr.length) * 100;
+    return Math.round(rank * 10) / 10;
+  };
+
+  const calculateGradeLabel = (pct: number): string => {
+    if (pct >= 80) return 'Grade A (Distinction)';
+    if (pct >= 50) return 'Grade B (Merit)';
+    return 'Grade C (Developing)';
+  };
+
+  const calculateDomainGradeStr = (score: number, total: number = 10): string => {
+    const pct = total > 0 ? (score / total) * 100 : 0;
+    if (pct >= 80) return 'A (Distinction)';
+    if (pct >= 50) return 'B (Merit)';
+    return 'C (Developing)';
+  };
+
+  const titleRows = [
+    ['COIMBATORE INSTITUTE OF TECHNOLOGY'],
+    ['FULL TEST ASSESSMENT REPORT — COMPREHENSIVE STUDENT ROSTER'],
+    [`Test Identifier / Code: ${testCode || 'N/A'}`],
+    [`Assessment Date: ${dateLabel || 'N/A'}`],
+    [`Total Candidates Evaluated: ${totalStudents}`],
+    [`Report Generated Timestamp: ${new Date().toLocaleString()}`],
+    ['']
+  ];
+
+  const headers = [
+    'S.No',
+    'Student Register Number',
+    'Student Name',
+    'Department',
+    'Email ID',
+    'Test Code',
+    'Date of Assessment',
+    'Overall Score (/50)',
+    'Overall Percentage (%)',
+    'Overall Grade',
+    'Overall Percentile (%)',
+    // Domain 1: Limits & Continuity
+    'Limits & Continuity Score (/10)',
+    'Limits & Continuity Grade',
+    'Limits & Continuity Percentile (%)',
+    // Domain 2: Differentiation
+    'Differentiation Score (/10)',
+    'Differentiation Grade',
+    'Differentiation Percentile (%)',
+    // Domain 3: Integration
+    'Integration Score (/10)',
+    'Integration Grade',
+    'Integration Percentile (%)',
+    // Domain 4: Probability & Statistics
+    'Probability & Statistics Score (/10)',
+    'Probability & Statistics Grade',
+    'Probability & Statistics Percentile (%)',
+    // Domain 5: Matrices & Determinants
+    'Matrices & Determinants Score (/10)',
+    'Matrices & Determinants Grade',
+    'Matrices & Determinants Percentile (%)'
+  ];
+
+  const rows = submissions.map((sub, idx) => {
+    const regNo = sub.student?.registerNo || 'N/A';
+    const name = sub.student?.name || 'N/A';
+    const dept = sub.student?.department || 'N/A';
+    const enrolled = lookupEnrolledStudent(regNo);
+    const email = (sub.student as any)?.email || enrolled?.email || `${regNo.toLowerCase()}@cit.edu.in`;
+    const overallScore = sub.report?.overallScore || 0;
+    const overallPct = sub.report?.overallPercentage || 0;
+    const overallGrade = sub.report?.cognitionLevel?.grade 
+      ? `Grade ${sub.report.cognitionLevel.grade}` 
+      : calculateGradeLabel(overallPct);
+    const overallPercentile = calculatePercentile(overallScore, overallScores);
+
+    const getDomainData = (dKey: string) => {
+      const sec = sub.report?.sectionScores?.[dKey as SectionId] || { score: 0, total: 10, percentage: 0 };
+      const score = sec.score ?? 0;
+      const grade = calculateDomainGradeStr(score, sec.total || 10);
+      const percentile = calculatePercentile(score, domainScoreArrays[dKey]);
+      return { score, grade, percentile };
+    };
+
+    const d1 = getDomainData('calculus');
+    const d2 = getDomainData('probability');
+    const d3 = getDomainData('numberSystem');
+    const d4 = getDomainData('trigonometry');
+    const d5 = getDomainData('statistics');
+
+    return [
+      idx + 1,
+      regNo,
+      name,
+      dept,
+      email,
+      (sub as any).testCode || testCode || 'CIT-MATH-2026-01',
+      sub.submittedAt || sub.report?.testTimestamp || dateLabel,
+      overallScore,
+      `${overallPct}%`,
+      overallGrade,
+      `${overallPercentile}%`,
+      d1.score,
+      d1.grade,
+      `${d1.percentile}%`,
+      d2.score,
+      d2.grade,
+      `${d2.percentile}%`,
+      d3.score,
+      d3.grade,
+      `${d3.percentile}%`,
+      d4.score,
+      d4.grade,
+      `${d4.percentile}%`,
+      d5.score,
+      d5.grade,
+      `${d5.percentile}%`
+    ];
+  });
+
+  const sheetData = [...titleRows, headers, ...rows];
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+
+  ws['!cols'] = [
+    { wch: 6 },   // S.No
+    { wch: 22 },  // Reg No
+    { wch: 26 },  // Name
+    { wch: 40 },  // Dept
+    { wch: 32 },  // Email
+    { wch: 20 },  // Test Code
+    { wch: 22 },  // Date
+    { wch: 18 },  // Overall Score
+    { wch: 22 },  // Overall %
+    { wch: 22 },  // Overall Grade
+    { wch: 22 },  // Overall Percentile
+    { wch: 30 },  // D1 Score
+    { wch: 24 },  // D1 Grade
+    { wch: 30 },  // D1 Percentile
+    { wch: 26 },  // D2 Score
+    { wch: 22 },  // D2 Grade
+    { wch: 28 },  // D2 Percentile
+    { wch: 24 },  // D3 Score
+    { wch: 22 },  // D3 Grade
+    { wch: 26 },  // D3 Percentile
+    { wch: 32 },  // D4 Score
+    { wch: 26 },  // D4 Grade
+    { wch: 32 },  // D4 Percentile
+    { wch: 32 },  // D5 Score
+    { wch: 26 },  // D5 Grade
+    { wch: 32 }   // D5 Percentile
+  ];
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Full Test Report');
+
+  const cleanTest = (testCode || 'CIT_TEST').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const cleanDate = (dateLabel || 'All_Dates').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const fileName = `CIT_Full_Test_Report_${cleanTest}_${cleanDate}.xlsx`;
+  XLSX.writeFile(wb, fileName);
 }
 
 /**

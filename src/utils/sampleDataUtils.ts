@@ -103,7 +103,8 @@ export async function retrieveAndRestore49TodaySubmissions(): Promise<SavedSubmi
       student: info,
       submittedAt: submissionDate.toISOString(),
       report,
-      isLockedOut: isLocked
+      isLockedOut: isLocked,
+      testCode: 'CIT-MATH-2026-01'
     };
 
     createdSubmissions.push(submission);

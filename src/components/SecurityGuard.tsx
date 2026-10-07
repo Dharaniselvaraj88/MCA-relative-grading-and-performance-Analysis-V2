@@ -258,15 +258,16 @@ export const SecurityGuard: React.FC<SecurityGuardProps> = ({
       }
     };
 
-    // DevTools open size threshold detector
-    const devToolsCheckInterval = setInterval(() => {
+    // DevTools open size threshold detector (Only in standalone windows, ignored inside iframes)
+    const isInsideIframe = typeof window !== 'undefined' && window.self !== window.top;
+    const devToolsCheckInterval = !isInsideIframe && isActive ? setInterval(() => {
       const threshold = 170;
       const widthDiff = window.outerWidth - window.innerWidth > threshold;
       const heightDiff = window.outerHeight - window.innerHeight > threshold;
       if (widthDiff || heightDiff) {
         logIncident('DEVTOOLS_OPENED_DETECTION', 'CRITICAL', `Browser Developer Console opened (Viewport diff: ${window.outerWidth - window.innerWidth}x${window.outerHeight - window.innerHeight}).`);
       }
-    }, 3000);
+    }, 15000) : null;
 
     window.addEventListener('copy', handleCopyCut);
     window.addEventListener('cut', handleCopyCut);
@@ -282,7 +283,7 @@ export const SecurityGuard: React.FC<SecurityGuardProps> = ({
     window.addEventListener('beforeprint', handleBeforePrint);
 
     return () => {
-      clearInterval(devToolsCheckInterval);
+      if (devToolsCheckInterval) clearInterval(devToolsCheckInterval);
       window.removeEventListener('copy', handleCopyCut);
       window.removeEventListener('cut', handleCopyCut);
       window.removeEventListener('selectstart', handleSelectStart);

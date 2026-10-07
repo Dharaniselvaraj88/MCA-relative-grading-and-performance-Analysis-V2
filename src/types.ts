@@ -40,6 +40,7 @@ export interface StudentInfo {
   department: string;
   accessPasscode: string;
   authenticatedAt: string;
+  email?: string;
   deviceId?: string;
   sessionId?: string;
 }
@@ -188,6 +189,8 @@ export interface SavedSubmission {
     timestamp: string;
   };
   feedback?: AppExperienceFeedback;
+  testId?: string;
+  testCode?: string;
 }
 
 export interface SecurityLog {

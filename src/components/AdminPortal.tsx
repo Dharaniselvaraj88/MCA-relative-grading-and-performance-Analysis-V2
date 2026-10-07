@@ -19,13 +19,14 @@ import {
 import { isStudentPinActive } from '../utils/scheduleUtils';
 import { parseQuestionBankFromExcel, downloadSampleQuestionBankTemplate } from '../utils/excelQuestionParser';
 import { generateTestQuestions, SECTION_METADATA, ALL_QUESTIONS } from '../data/questionsData';
-import { getConfiguredDepartments } from '../utils/testManagerUtils';
+import { getConfiguredDepartments, getActiveAssessmentTest } from '../utils/testManagerUtils';
 import {
   downloadPdfReport,
   downloadExcelReport,
   downloadSingleDatePdfReport,
   downloadSingleDateExcelReport,
   downloadSingleDateCsvReport,
+  downloadFullTestReportExcel,
   downloadDepartmentwisePdfReport,
   downloadDepartmentwiseExcelReport,
   downloadDepartmentwiseCsvReport,
@@ -234,7 +235,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [activeTab, setActiveTab] = useState<'dashboard' | 'submissions' | 'attendance' | 'domain_analysis' | 'student_feedback' | 'access_control' | 'security_monitor' | 'question_bank' | 'storage_monitor' | 'tests_management'>('submissions');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedDept, setSelectedDept] = useState('ALL');
-  const [selectedDate, setSelectedDate] = useState(''); // YYYY-MM-DD or empty for all
+  const [selectedDate, setSelectedDate] = useState(''); // YYYY-MM-DD or empty
+  const [selectedTestCode, setSelectedTestCode] = useState(''); // Selected assessment test code/identifier
+  const [isCustomTestCodeInput, setIsCustomTestCodeInput] = useState(false);
   const [analyticsDept, setAnalyticsDept] = useState('ALL');
   const [analyticsDate, setAnalyticsDate] = useState('');
   const [securityFilter, setSecurityFilter] = useState<'ALL' | 'COMPLETED' | 'LOCKED'>('ALL');
@@ -555,6 +558,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     setSearchTerm('');
     setSelectedDept('ALL');
     setSelectedDate('');
+    setSelectedTestCode('');
+    setIsCustomTestCodeInput(false);
     setSecurityFilter('ALL');
   };
 
@@ -1806,9 +1811,28 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
   };
 
+  // Helper to extract clean test code from a submission
+  const getSubmissionTestCode = (sub: SavedSubmission): string => {
+    const raw = sub.testCode || (sub as any).testIdentifier || (sub as any).code;
+    if (raw && String(raw).trim()) return String(raw).trim();
+    if (sub.testId) {
+      const match = assessmentTests.find((t) => t.id === sub.testId);
+      if (match?.testCode && match.testCode.trim()) return match.testCode.trim();
+    }
+    return 'CIT-MATH-2026-01';
+  };
+
+  // Check if submission matches target test code / identifier
+  const matchesTestCodeFilter = (sub: SavedSubmission, targetCode: string) => {
+    if (!targetCode) return false;
+    const subCode = getSubmissionTestCode(sub).toUpperCase().trim();
+    const target = targetCode.toUpperCase().trim();
+    return subCode === target;
+  };
+
   // Check if submission date matches target calendar date
   const matchesDateFilter = (sub: SavedSubmission, targetDateStr: string) => {
-    if (!targetDateStr) return true;
+    if (!targetDateStr) return false;
     const rawDate = sub.submittedAt || sub.report?.testTimestamp || '';
     if (!rawDate) return false;
 
@@ -1832,42 +1856,94 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     return false;
   };
 
-  // Submissions filtered by calendar date
-  const submissionsForSelectedDate = submissions.filter((sub) =>
-    matchesDateFilter(sub, selectedDate)
-  );
+  // Memoized available test codes across assessment test configs and submissions
+  const availableTestCodes = useMemo(() => {
+    const set = new Set<string>();
+    assessmentTests.forEach((t) => {
+      if (t.testCode && t.testCode.trim()) set.add(t.testCode.trim());
+    });
+    submissions.forEach((s) => {
+      const c = getSubmissionTestCode(s);
+      if (c) set.add(c);
+    });
+    try {
+      const active = getActiveAssessmentTest();
+      if (active?.testCode) set.add(active.testCode.trim());
+    } catch {
+      // ignore
+    }
+    if (set.size === 0) {
+      set.add('CIT-MATH-2026-01');
+    }
+    return Array.from(set).sort();
+  }, [assessmentTests, submissions]);
+
+  // Memoized recorded assessment dates from actual student submissions
+  const availableDates = useMemo(() => {
+    const set = new Set<string>();
+    submissions.forEach((s) => {
+      const raw = s.submittedAt || s.report?.testTimestamp || '';
+      const norm = normalizeDateToYyyyMmDd(raw);
+      if (norm) set.add(norm);
+    });
+    return Array.from(set).sort().reverse();
+  }, [submissions]);
+
+  // Strict Gate: Both Date AND Test Code / Identifier must be chosen for data to load
+  const isDateAndTestSelected = Boolean(selectedDate && selectedTestCode);
+
+  // Submissions filtered strictly by both selected assessment date AND test code/identifier
+  const submissionsForSelectedDate = useMemo(() => {
+    if (!isDateAndTestSelected) return [];
+    return submissions.filter(
+      (sub) => matchesDateFilter(sub, selectedDate) && matchesTestCodeFilter(sub, selectedTestCode)
+    );
+  }, [submissions, selectedDate, selectedTestCode, isDateAndTestSelected]);
 
   // Submissions filtered for Departmentwise & Gradewise Report Generator
-  const submissionsForSelectedDept = submissions.filter(
-    (sub) => selectedReportDept === 'ALL' || sub.student.department === selectedReportDept
-  );
+  // Strictly scoped to the selected date and test code cohort!
+  const submissionsForSelectedDept = useMemo(() => {
+    if (!isDateAndTestSelected) return [];
+    return submissionsForSelectedDate.filter(
+      (sub) => selectedReportDept === 'ALL' || sub.student.department === selectedReportDept
+    );
+  }, [submissionsForSelectedDate, selectedReportDept, isDateAndTestSelected]);
 
-  const submissionsForSelectedDeptAndGrade = submissionsForSelectedDept.filter((sub) => {
-    if (selectedReportGrade === 'ALL') return true;
-    const g = calculateGrade(sub.report?.overallPercentage || 0).grade;
-    return g === selectedReportGrade;
-  });
+  const submissionsForSelectedDeptAndGrade = useMemo(() => {
+    if (!isDateAndTestSelected) return [];
+    return submissionsForSelectedDept.filter((sub) => {
+      if (selectedReportGrade === 'ALL') return true;
+      const g = calculateGrade(sub.report?.overallPercentage || 0).grade;
+      return g === selectedReportGrade;
+    });
+  }, [submissionsForSelectedDept, selectedReportGrade, isDateAndTestSelected]);
 
-  // Calculate Security Locked Submissions
-  const lockedSubmissionsCount = submissions.filter(
-    (s) => s.isLockedOut || s.securityViolation?.isViolated
-  ).length;
+  // Calculate Security Locked Submissions strictly within the selected session
+  const lockedSubmissionsCount = useMemo(() => {
+    if (!isDateAndTestSelected) return 0;
+    return submissionsForSelectedDate.filter(
+      (s) => s.isLockedOut || s.securityViolation?.isViolated
+    ).length;
+  }, [submissionsForSelectedDate, isDateAndTestSelected]);
 
-  // Final table filter combining search, dept, date, and security status
-  const filtered = submissionsForSelectedDate.filter((sub) => {
-    const matchesSearch =
-      sub.student.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      sub.student.registerNo.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesDept = selectedDept === 'ALL' || sub.student.department === selectedDept;
+  // Final table filter combining search, dept, date, test code, and security status
+  const filtered = useMemo(() => {
+    if (!isDateAndTestSelected) return [];
+    return submissionsForSelectedDate.filter((sub) => {
+      const matchesSearch =
+        sub.student.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        sub.student.registerNo.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesDept = selectedDept === 'ALL' || sub.student.department === selectedDept;
 
-    const isLocked = sub.isLockedOut || sub.securityViolation?.isViolated;
-    const matchesSecurity =
-      securityFilter === 'ALL' ||
-      (securityFilter === 'LOCKED' && isLocked) ||
-      (securityFilter === 'COMPLETED' && !isLocked);
+      const isLocked = sub.isLockedOut || sub.securityViolation?.isViolated;
+      const matchesSecurity =
+        securityFilter === 'ALL' ||
+        (securityFilter === 'LOCKED' && isLocked) ||
+        (securityFilter === 'COMPLETED' && !isLocked);
 
-    return matchesSearch && matchesDept && matchesSecurity;
-  });
+      return matchesSearch && matchesDept && matchesSecurity;
+    });
+  }, [submissionsForSelectedDate, searchTerm, selectedDept, securityFilter, isDateAndTestSelected]);
 
   const handleToggleSelectAll = () => {
     if (filtered.length === 0) return;
@@ -1905,7 +1981,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         }
         return selectedDate;
       })()
-    : 'All Assessment Dates';
+    : 'No Date Selected';
 
   const deptReportLabel = selectedReportDept === 'ALL' ? 'All Departments' : selectedReportDept;
 
@@ -2274,8 +2350,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
             {userRole === 'admin' && submissions.length > 0 && (
               <button
-                onClick={onClearSubmissions}
+                onClick={() => setIsDeleteAllModalOpen(true)}
                 className="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-300 rounded text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                title="Permanently clear all student submission records from database and local storage"
               >
                 <Trash2 className="w-4 h-4 text-rose-600" />
                 Clear All Records
@@ -4185,79 +4262,184 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   Datewise Assessment Report
                 </h2>
                 <span className="px-2 py-0.5 bg-blue-100 text-blue-800 border border-blue-200 rounded text-[10px] font-semibold">
-                  Calendar Picker
+                  Date &amp; Test Code Gate
                 </span>
               </div>
               <p className="text-xs text-slate-600">
-                Choose a specific assessment date from the calendar to generate a single consolidated report comprising <strong className="text-blue-700 font-semibold">Register Number</strong>, <strong className="text-blue-700 font-semibold">Student Name</strong>, <strong className="text-blue-700 font-semibold">Department</strong>, <strong className="text-blue-700 font-semibold">Score Secured</strong>, and <strong className="text-blue-700 font-semibold">Date of Assessment</strong>.
+                Choose an <strong className="text-blue-700 font-semibold">Assessment Date</strong> and <strong className="text-purple-700 font-semibold">Test Code / Identifier</strong>. Both inputs are required to load assessment records, department analysis, and student submissions.
               </p>
             </div>
 
-            {/* Calendar Input & Clear Date */}
-            <div className="flex items-center gap-3 self-start lg:self-auto shrink-0">
-              <div className="flex items-center gap-2 bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 focus-within:border-blue-600">
+            {/* Calendar Input, Test Code Selector & Clear / Reset */}
+            <div className="flex items-center gap-2.5 flex-wrap self-start lg:self-auto shrink-0">
+              {/* Date Input */}
+              <div className="flex items-center gap-2 bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 focus-within:border-blue-600 shadow-2xs">
                 <Calendar className="w-4 h-4 text-blue-600 shrink-0" />
-                <span className="text-xs text-slate-600 font-medium hidden sm:inline">Select Date:</span>
+                <span className="text-xs text-slate-600 font-medium hidden sm:inline">Assessment Date:</span>
                 <input
                   type="date"
                   value={selectedDate}
                   onChange={(e) => setSelectedDate(e.target.value)}
-                  className="bg-transparent text-xs text-slate-900 font-mono focus:outline-none cursor-pointer"
+                  className="bg-transparent text-xs text-slate-900 font-mono font-medium focus:outline-none cursor-pointer"
                 />
               </div>
 
-              {selectedDate && (
+              {/* Test Code / Identifier Input & Dropdown */}
+              <div className="flex items-center gap-2 bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 focus-within:border-purple-600 shadow-2xs">
+                <KeyRound className="w-4 h-4 text-purple-600 shrink-0" />
+                <span className="text-xs text-slate-600 font-medium hidden sm:inline">Test Code / ID:</span>
+                <select
+                  value={availableTestCodes.includes(selectedTestCode) ? selectedTestCode : (selectedTestCode ? '__CUSTOM__' : '')}
+                  onChange={(e) => {
+                    if (e.target.value === '__CUSTOM__') {
+                      setSelectedTestCode('');
+                      setIsCustomTestCodeInput(true);
+                    } else {
+                      setSelectedTestCode(e.target.value);
+                      setIsCustomTestCodeInput(false);
+                    }
+                  }}
+                  className="bg-transparent text-xs text-slate-900 font-mono font-bold focus:outline-none cursor-pointer max-w-[190px] truncate"
+                >
+                  <option value="">-- Select Test Code --</option>
+                  {availableTestCodes.map((code) => (
+                    <option key={code} value={code}>{code}</option>
+                  ))}
+                  <option value="__CUSTOM__">✏️ Custom Code...</option>
+                </select>
+                {isCustomTestCodeInput && (
+                  <input
+                    type="text"
+                    autoFocus
+                    value={selectedTestCode}
+                    onChange={(e) => setSelectedTestCode(e.target.value.toUpperCase())}
+                    placeholder="Enter code"
+                    className="w-28 px-2 py-0.5 text-xs font-mono font-bold border border-purple-400 rounded bg-white text-slate-900 focus:outline-none"
+                  />
+                )}
+              </div>
+
+              {/* Clear / Reset Selection Button */}
+              {(selectedDate || selectedTestCode) && (
                 <button
-                  onClick={() => setSelectedDate('')}
-                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs border border-slate-300 transition-all flex items-center gap-1 cursor-pointer"
+                  type="button"
+                  onClick={() => {
+                    setSelectedDate('');
+                    setSelectedTestCode('');
+                    setIsCustomTestCodeInput(false);
+                  }}
+                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs border border-slate-300 transition-all flex items-center gap-1 cursor-pointer shrink-0 shadow-2xs"
+                  title="Clear selected Assessment Date and Test Code"
                 >
                   <X className="w-3.5 h-3.5" />
-                  <span>Show All Dates</span>
+                  <span>Reset</span>
                 </button>
               )}
             </div>
           </div>
+
+          {/* Quick Date and Test Code Suggestion Chips if unselected */}
+          {(!selectedDate || !selectedTestCode) && (
+            <div className="pt-2 border-t border-slate-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs">
+              {!selectedDate && availableDates.length > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[11px] text-slate-500 font-medium">Recorded Dates:</span>
+                  {availableDates.slice(0, 4).map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => setSelectedDate(d)}
+                      className="px-2 py-0.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded text-[11px] font-mono border border-blue-200 transition-all cursor-pointer"
+                    >
+                      {d}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {!selectedTestCode && availableTestCodes.length > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[11px] text-slate-500 font-medium">Available Test Codes:</span>
+                  {availableTestCodes.slice(0, 3).map((tc) => (
+                    <button
+                      key={tc}
+                      type="button"
+                      onClick={() => setSelectedTestCode(tc)}
+                      className="px-2 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded text-[11px] font-mono font-bold border border-purple-200 transition-all cursor-pointer"
+                    >
+                      {tc}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Quick Stats & Consolidated Report Action Buttons */}
           <div className="pt-3 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-50 p-3 rounded-lg">
             <div className="text-xs text-slate-700 flex items-center gap-2">
               <Users className="w-4 h-4 text-emerald-600 shrink-0" />
               <span>
-                Report Context: <strong className="text-emerald-700 font-semibold">{dateLabel}</strong> — <strong className="text-slate-900 font-mono">{submissionsForSelectedDate.length}</strong> student(s) evaluated
+                Report Context:{' '}
+                {isDateAndTestSelected ? (
+                  <>
+                    <strong className="text-emerald-700 font-semibold">{dateLabel}</strong> • Test Code:{' '}
+                    <strong className="text-purple-700 font-mono font-bold">{selectedTestCode}</strong> —{' '}
+                    <strong className="text-slate-900 font-mono">{submissionsForSelectedDate.length}</strong> student(s) evaluated
+                  </>
+                ) : (
+                  <span className="text-amber-700 font-medium italic">
+                    Select both Assessment Date &amp; Test Code above to load records and analysis
+                  </span>
+                )}
               </span>
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
               <button
+                disabled={!isDateAndTestSelected || submissionsForSelectedDate.length === 0}
                 onClick={() => setIsSingleReportModalOpen(true)}
-                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-bold text-xs rounded transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
               >
                 <Eye className="w-3.5 h-3.5" />
                 <span>Preview Single Report</span>
               </button>
 
               <button
-                onClick={() => downloadSingleDatePdfReport(submissionsForSelectedDate, dateLabel, submissions)}
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+                disabled={!isDateAndTestSelected || submissionsForSelectedDate.length === 0}
+                onClick={() => downloadSingleDatePdfReport(submissionsForSelectedDate, dateLabel, submissionsForSelectedDate)}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white font-bold text-xs rounded transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
               >
                 <FileText className="w-3.5 h-3.5 text-blue-100" />
                 <span>Export Single PDF</span>
               </button>
 
               <button
-                onClick={() => downloadSingleDateExcelReport(submissionsForSelectedDate, dateLabel, submissions)}
-                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+                disabled={!isDateAndTestSelected || submissionsForSelectedDate.length === 0}
+                onClick={() => downloadSingleDateExcelReport(submissionsForSelectedDate, dateLabel, submissionsForSelectedDate)}
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-bold text-xs rounded transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-100" />
                 <span>Export Excel (.xlsx)</span>
               </button>
 
               <button
-                onClick={() => downloadSingleDateCsvReport(submissionsForSelectedDate, dateLabel, submissions)}
-                className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-semibold text-xs rounded transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+                disabled={!isDateAndTestSelected || submissionsForSelectedDate.length === 0}
+                onClick={() => downloadSingleDateCsvReport(submissionsForSelectedDate, dateLabel, submissionsForSelectedDate)}
+                className="px-3 py-1.5 bg-white hover:bg-slate-100 disabled:opacity-40 text-slate-700 border border-slate-300 font-semibold text-xs rounded transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
               >
                 <FileCode className="w-3.5 h-3.5 text-amber-600" />
                 <span>Export CSV</span>
+              </button>
+
+              {/* FULL TEST REPORT BUTTON REQUESTED BY USER */}
+              <button
+                disabled={!isDateAndTestSelected || submissionsForSelectedDate.length === 0}
+                onClick={() => downloadFullTestReportExcel(submissionsForSelectedDate, dateLabel, selectedTestCode)}
+                className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white font-extrabold text-xs rounded transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
+                title="Download comprehensive Excel report containing Register Number, Name, Department, Email, Domain Grades & Percentiles for all students who took this test on this date"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-violet-200" />
+                <span>Full Test Report</span>
               </button>
 
               {submissionsForSelectedDate.length > 0 && (
@@ -4385,6 +4567,31 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           )}
         </div>
 
+        {/* CONDITIONALLY RENDER DEPARTMENTWISE & GRADEWISE REPORTS ONLY WHEN DATE & TEST CODE ARE SELECTED */}
+        {isDateAndTestSelected ? (
+          submissionsForSelectedDate.length === 0 ? (
+            <div className="bg-amber-50/90 border border-amber-300 rounded-2xl p-8 text-center space-y-3 shadow-sm animate-in fade-in">
+              <AlertCircle className="w-10 h-10 text-amber-600 mx-auto" />
+              <h3 className="text-base font-bold text-amber-950 font-sans">No Assessment Records Found</h3>
+              <p className="text-xs text-amber-800 max-w-lg mx-auto leading-relaxed">
+                No students were evaluated for test code <strong className="font-mono text-purple-900 bg-purple-100 px-1.5 py-0.5 rounded border border-purple-200">{selectedTestCode}</strong> on <strong className="text-slate-900 bg-white px-1.5 py-0.5 rounded border border-amber-300">{dateLabel}</strong>.
+              </p>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedDate('');
+                    setSelectedTestCode('');
+                    setIsCustomTestCodeInput(false);
+                  }}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-lg transition-all cursor-pointer shadow-xs"
+                >
+                  Reset Selection &amp; Choose Another Date / Test Code
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
         {/* DEPARTMENTWISE ASSESSMENT REPORT BAR */}
         <div className="bg-white border border-emerald-300/80 rounded-xl p-5 shadow-md space-y-4 break-inside-avoid">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -4858,6 +5065,45 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             </div>
           </div>
         </div>
+        </>
+      )
+    ) : (
+      <div className="bg-gradient-to-r from-blue-50/90 via-indigo-50/90 to-purple-50/90 border-2 border-dashed border-blue-300 rounded-2xl p-8 text-center space-y-4 shadow-sm animate-in fade-in">
+        <div className="w-14 h-14 bg-blue-100 text-blue-700 rounded-2xl flex items-center justify-center mx-auto shadow-inner">
+          <Calendar className="w-7 h-7 text-blue-600" />
+        </div>
+        <div className="max-w-xl mx-auto space-y-1.5">
+          <h3 className="text-base font-bold text-slate-900 font-sans">
+            Select Assessment Date &amp; Test Code / Identifier to Load Data
+          </h3>
+          <p className="text-xs text-slate-600 leading-relaxed">
+            In accordance with examination reporting standards, department-wise analysis, performance evaluation, and student submission rosters are loaded exclusively for a specific assessment test code and date.
+          </p>
+        </div>
+
+        <div className="flex items-center justify-center gap-3 flex-wrap text-xs">
+          <div className={`px-3.5 py-2 rounded-xl border font-medium flex items-center gap-2 ${
+            selectedDate ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-amber-50 text-amber-800 border-amber-300'
+          }`}>
+            <Calendar className="w-4 h-4 text-blue-600" />
+            <span>Assessment Date: <strong>{selectedDate ? dateLabel : 'Not Selected'}</strong></span>
+            <span className="text-[11px] font-bold">{selectedDate ? '✓ Ready' : '⚠️ Required'}</span>
+          </div>
+
+          <div className={`px-3.5 py-2 rounded-xl border font-medium flex items-center gap-2 ${
+            selectedTestCode ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-amber-50 text-amber-800 border-amber-300'
+          }`}>
+            <KeyRound className="w-4 h-4 text-purple-600" />
+            <span>Test Code / ID: <strong>{selectedTestCode || 'Not Selected'}</strong></span>
+            <span className="text-[11px] font-bold">{selectedTestCode ? '✓ Ready' : '⚠️ Required'}</span>
+          </div>
+        </div>
+
+        <p className="text-[11px] text-slate-500 italic">
+          Please choose both an Assessment Date and Test Code / Identifier in the controls above to initiate analysis and display records.
+        </p>
+      </div>
+    )}
         </>
         )}
 
@@ -6986,7 +7232,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         )}
 
         {/* SUBMISSIONS TABLE & LOCKOUT TRACKER SECTION */}
-        {activeTab === 'submissions' && (
+        {activeTab === 'submissions' && isDateAndTestSelected && submissionsForSelectedDate.length > 0 && (
           <>
             {/* SECURITY VIOLATION INCIDENT TRACKER BANNER */}
         {lockedSubmissionsCount > 0 && (
@@ -7201,11 +7447,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <h2 className="text-base font-bold font-sans text-slate-900">Evaluated Student Submissions</h2>
-              {selectedDate && (
-                <span className="text-xs text-blue-700 font-semibold bg-blue-50 px-2.5 py-1 rounded border border-blue-200">
-                  Filtered by Date: {dateLabel}
-                </span>
-              )}
+              <span className="text-xs text-blue-700 font-semibold bg-blue-50 px-2.5 py-1 rounded border border-blue-200">
+                {dateLabel} • Test Code: {selectedTestCode} ({submissionsForSelectedDate.length} Evaluated)
+              </span>
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
@@ -7624,7 +7868,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <div className="bg-slate-900 p-5 border-b border-slate-800 flex items-center justify-between gap-4">
               <div>
                 <p className="text-sm text-blue-300 font-bold uppercase tracking-tight">
-                  Datewise Assessment Report • {dateLabel}
+                  Datewise Assessment Report • {dateLabel} {selectedTestCode ? `• Test Code: ${selectedTestCode}` : ''}
                 </p>
               </div>
 
@@ -7642,27 +7886,35 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 Total Students: <strong className="text-slate-900 font-mono">{submissionsForSelectedDate.length}</strong>
               </span>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
-                  onClick={() => downloadSingleDatePdfReport(submissionsForSelectedDate, dateLabel, submissions)}
+                  onClick={() => downloadSingleDatePdfReport(submissionsForSelectedDate, dateLabel, submissionsForSelectedDate)}
                   className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
                 >
                   <FileText className="w-3.5 h-3.5" />
                   <span>Download PDF</span>
                 </button>
                 <button
-                  onClick={() => downloadSingleDateExcelReport(submissionsForSelectedDate, dateLabel, submissions)}
+                  onClick={() => downloadSingleDateExcelReport(submissionsForSelectedDate, dateLabel, submissionsForSelectedDate)}
                   className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5" />
                   <span>Download Excel</span>
                 </button>
                 <button
-                  onClick={() => downloadSingleDateCsvReport(submissionsForSelectedDate, dateLabel, submissions)}
+                  onClick={() => downloadSingleDateCsvReport(submissionsForSelectedDate, dateLabel, submissionsForSelectedDate)}
                   className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-semibold rounded flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
                 >
                   <FileCode className="w-3.5 h-3.5 text-amber-600" />
                   <span>Download CSV</span>
+                </button>
+                <button
+                  onClick={() => downloadFullTestReportExcel(submissionsForSelectedDate, dateLabel, selectedTestCode)}
+                  className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white font-bold rounded flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
+                  title="Download Full Test Report Excel with Domain Grades & Percentiles"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-violet-200" />
+                  <span>Full Test Report</span>
                 </button>
                 <button
                   onClick={() => window.print()}

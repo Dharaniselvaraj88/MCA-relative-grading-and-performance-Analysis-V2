@@ -836,7 +836,9 @@ export default function App() {
       id: `SUB-${Date.now()}`,
       student: sessionStudent,
       submittedAt: getCurrentTimestamp(),
-      report: generatedReport
+      report: generatedReport,
+      testId: activeAssessmentTest?.id,
+      testCode: activeAssessmentTest?.testCode || 'CIT-MATH-2026-01'
     };
 
     // 1. Persist to localStorage backup
@@ -1124,10 +1126,16 @@ export default function App() {
     setSavedSubmissions([]);
     clearPendingOfflineSubmissions();
     try {
-      localStorage.removeItem('CIT_COGNITIVE_SUBMISSIONS');
-      localStorage.removeItem('CIT_ASSESSMENT_SUBMISSIONS');
-      localStorage.removeItem('CIT_OFFLINE_SUBMISSIONS');
-      localStorage.removeItem('CIT_ACTIVE_ASSESSMENT_SESSION');
+      const keys = [
+        'CIT_COGNITIVE_SUBMISSIONS',
+        'CIT_ASSESSMENT_SUBMISSIONS',
+        'CIT_SAVED_SUBMISSIONS',
+        'CIT_OFFLINE_SUBMISSIONS',
+        'CIT_PENDING_OFFLINE_SUBMISSIONS',
+        'CIT_MATH_ASSESSMENT_SUBMISSIONS',
+        'CIT_ACTIVE_ASSESSMENT_SESSION'
+      ];
+      keys.forEach((k) => localStorage.removeItem(k));
       const result = await clearAllSubmissionsFromFirestore();
       setSyncBannerMessage(`🗑️ Database Cleared: Successfully cleared ${result.deletedCount} student submissions from Firestore database.`);
       setTimeout(() => setSyncBannerMessage(null), 6000);
@@ -1356,7 +1364,9 @@ export default function App() {
       id: `SUB-${Date.now()}`,
       student: currentStudent,
       submittedAt: getCurrentTimestamp(),
-      report: generatedReport
+      report: generatedReport,
+      testId: activeAssessmentTest?.id,
+      testCode: activeAssessmentTest?.testCode || 'CIT-MATH-2026-01'
     };
 
     // 1. Immediately persist to localStorage backup
@@ -2154,7 +2164,7 @@ export default function App() {
                 setReport(sub.report);
                 setViewState('report');
               }}
-              onClearSubmissions={() => setSavedSubmissions([])}
+              onClearSubmissions={handleDeleteAllSubmissions}
               isStudentLoginLocked={isStudentLoginLocked}
               isFacultyLoginLocked={isFacultyLoginLocked}
               lockedStudentRegNos={lockedStudentRegNos}
