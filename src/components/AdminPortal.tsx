@@ -7188,7 +7188,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               </div>
             </div>
             <a
-              href="https://console.firebase.google.com/project/stone-vial-71ttq/firestore/databases/ai-studio-remixcitcognitiv-494b0f07-3f01-401b-8a1c-658b38a067ed/data?openUpgradeDialog=true"
+              href="https://console.firebase.google.com/project/advance-quote-9n2tx/firestore/databases/ai-studio-mcarelativegradi-e5d2d8cc-7dfc-412e-95a3-30b63b32ad1f/data?openUpgradeDialog=true"
               target="_blank"
               rel="noopener noreferrer"
               className="shrink-0 px-2.5 py-1 bg-amber-200/80 hover:bg-amber-300 text-amber-900 font-bold rounded-lg border border-amber-400 flex items-center gap-1 transition-all"
