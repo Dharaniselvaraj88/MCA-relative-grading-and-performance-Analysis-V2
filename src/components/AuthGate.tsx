@@ -1483,23 +1483,6 @@ export const AuthGate: React.FC<AuthGateProps> = ({
                     </div>
                   </div>
 
-                  {/* Credential Helper Badge */}
-                  <div className="p-2.5 bg-purple-50 border border-purple-200 rounded-lg flex items-center justify-between text-xs">
-                    <span className="text-purple-900 font-medium">
-                      Default: <code className="font-mono font-bold text-purple-800 bg-purple-100 px-1 py-0.5 rounded">{adminId || 'admin'}</code> / PIN: <code className="font-mono font-bold text-purple-800 bg-purple-100 px-1 py-0.5 rounded">{adminAccessPin || 'cit@123'}</code>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAdminIdInput(adminId || 'admin');
-                        setAdminPin(adminAccessPin || 'cit@123');
-                        setErrorMsg('');
-                      }}
-                      className="text-purple-700 hover:text-purple-900 font-bold hover:underline cursor-pointer ml-2 text-[11px]"
-                    >
-                      Fill Default
-                    </button>
-                  </div>
 
                   <button
                     type="submit"
